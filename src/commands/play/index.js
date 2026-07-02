@@ -1,8 +1,8 @@
 import { SlashCommandBuilder } from "discord.js";
-import { log } from "../../lib/logger.js";
 import { ensureVoice } from "../../lib/guards.js";
-import { resolveQuery } from "../../services/music/resolver.js";
+import { log } from "../../lib/logger.js";
 import { enqueue, getOrCreateQueue } from "../../services/music/playback.js";
+import { resolveQuery } from "../../services/music/resolver.js";
 import { playlistQueued, trackQueued } from "../../views/musicEmbeds.js";
 import { autocomplete } from "./autocomplete.js";
 

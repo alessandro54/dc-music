@@ -1,7 +1,7 @@
-import { getConfig, setConfig } from "./config.js";
-import { log } from "./logger.js";
-import HTML from "./dashboard.html" with { type: "text" };
 import CONFIG_HTML from "./config.html" with { type: "text" };
+import { getConfig, setConfig } from "./config.js";
+import HTML from "./dashboard.html" with { type: "text" };
+import { log } from "./logger.js";
 
 function checkAuth(req, url) {
     const token = Deno.env.get("DASHBOARD_TOKEN");

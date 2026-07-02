@@ -1,4 +1,4 @@
-import { describe, test, expect, mock } from 'bun:test';
+import { describe, expect, mock, test } from 'bun:test';
 import { PermissionFlagsBits } from 'discord.js';
 
 mock.module('@discordjs/voice', () => ({

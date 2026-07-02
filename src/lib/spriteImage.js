@@ -7,6 +7,7 @@ import { PNG } from "pngjs";
 //   '▄' (lower half block) -> top pixel = transparent, bottom pixel = current fg
 //   ' ' (space)            -> both pixels transparent, regardless of any
 //                             lingering fg/bg state
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching the ESC byte is the point — parsing ANSI escape codes
 const SGR_OR_CHAR = /\x1b\[([0-9;]*)m|([\s\S])/g;
 
 function parseRgb(params) {
@@ -20,9 +21,7 @@ function parseLine(line) {
     const bottom = [];
     let fg = null;
     let bg = null;
-    SGR_OR_CHAR.lastIndex = 0;
-    let m;
-    while ((m = SGR_OR_CHAR.exec(line))) {
+    for (const m of line.matchAll(SGR_OR_CHAR)) {
         const [, params, ch] = m;
         if (params !== undefined) {
             if (params === "" || params === "0") fg = bg = null;

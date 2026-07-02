@@ -1,7 +1,7 @@
 import { MessageFlags } from "discord.js";
-import { nowPlayingControls, nowPlayingEmbed } from "../views/musicEmbeds.js";
 import { log } from "../lib/logger.js";
 import { queues } from "../services/music/guildQueue.js";
+import { nowPlayingControls, nowPlayingEmbed } from "../views/musicEmbeds.js";
 
 export default {
     name: "interactionCreate",
