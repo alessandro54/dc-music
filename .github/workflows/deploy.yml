@@ -49,13 +49,14 @@ jobs:
           context: .
           push: true
           platforms: linux/arm64
-          # Scheduled runs bust the pip-install layer so yt-dlp re-pulls fresh;
-          # pushes keep the cache for fast builds.
+          # Scheduled + manually dispatched runs bust the pip-install layer so
+          # yt-dlp re-pulls fresh; pushes keep the cache for fast builds.
           build-args: |
-            CACHEBUST=${{ github.event_name == 'schedule' && github.run_id || '' }}
+            CACHEBUST=${{ github.event_name != 'push' && github.run_id || '' }}
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:${{ github.sha }}-r${{ github.run_id }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -70,4 +71,8 @@ jobs:
           host: 143.47.116.141
           username: ubuntu
           key: ${{ secrets.DOKKU_SSH_KEY }}
-          script: sudo dokku git:from-image music-bot ${{ env.IMAGE }}:${{ github.sha }}
+          # Per-run tag: scheduled rebuilds reuse the same commit SHA, and a
+          # SHA-only tag makes Dokku skip the pull ("image exists on host") and
+          # then fail with "No changes detected". A unique tag per run forces
+          # both the pull and the redeploy.
+          script: sudo dokku git:from-image music-bot ${{ env.IMAGE }}:${{ github.sha }}-r${{ github.run_id }}
