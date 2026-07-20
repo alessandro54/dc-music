@@ -50,15 +50,18 @@ if (potBaseUrl) {
 // runtime — without it YouTube returns only image formats, no audio.
 const EJS_ARGS = ["--remote-components", "ejs:github"];
 
-// Pin the YouTube client to `tv` and force PO-token fetching.
-// - player_client=tv: the default multi-client set mints a GVS PO token bound
-//   to one client (web_safari) but selects a format URL served by another
-//   (TVHTML5) → token doesn't match the URL → HTTP 403. Pinning tv keeps the
-//   token and the chosen DASH opus format (itag 251) on the same client.
-// - fetch_pot=always: the tv client skips the PO token by default, but some
+// Force PO-token fetching, but let yt-dlp pick the client.
+// - No player_client pin: YouTube enabled the SABR-only streaming experiment
+//   on this account's `tv` client (formats come back with no URLs — see
+//   https://github.com/yt-dlp/yt-dlp/issues/12482), so pinning tv yields
+//   "Requested format is not available". yt-dlp ≥ 2026.07.04 keeps the PO
+//   token and format URL on the same client in the default set (it used to
+//   mismatch → 403, which is why tv was pinned), so the default set is safe
+//   again and falls through to a client that still serves DASH opus (251).
+// - fetch_pot=always: some clients skip the PO token by default, but some
 //   videos' GVS URLs require one → 403. Forcing it makes bgutil always mint
-//   the player + gvs tokens for tv.
-const CLIENT_ARGS = ["--extractor-args", "youtube:player_client=tv;fetch_pot=always"];
+//   the player + gvs tokens.
+const CLIENT_ARGS = ["--extractor-args", "youtube:fetch_pot=always"];
 
 const AUDIO_FMT = "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=opus]/bestaudio";
 const dec = new TextDecoder();
