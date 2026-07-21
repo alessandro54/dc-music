@@ -26,6 +26,10 @@ async function initSqlite(path) {
     const select = db.prepare(
         "SELECT title, url, user_tag, duration, played_at FROM song_history WHERE guild_id = ? ORDER BY played_at DESC LIMIT ?",
     );
+    // One row per url (latest play) — autocomplete suggestions, not a play log.
+    const selectDistinct = db.prepare(
+        "SELECT title, url, user_tag, duration, MAX(played_at) AS played_at FROM song_history WHERE guild_id = ? GROUP BY url ORDER BY played_at DESC LIMIT ?",
+    );
     log.db(`SQLite ready — ${path}`);
     return {
         saveSong: ({ guildId, userId, userTag, title, url, duration }) => {
@@ -38,6 +42,7 @@ async function initSqlite(path) {
             } catch (err) { log.error(`saveSong: ${err.message}`); }
         },
         getHistory: (guildId, limit) => select.all(guildId, limit),
+        getRecentSongs: (guildId, limit) => selectDistinct.all(guildId, limit),
     };
 }
 
@@ -86,6 +91,16 @@ async function initTurso(url, authToken) {
                 title: r.title, url: r.url, user_tag: r.user_tag, duration: r.duration, played_at: r.played_at,
             }));
         },
+        // One row per url (latest play) — autocomplete suggestions, not a play log.
+        getRecentSongs: async (guildId, limit) => {
+            const res = await db.execute({
+                sql: "SELECT title, url, user_tag, duration, MAX(played_at) AS played_at FROM song_history WHERE guild_id = ? GROUP BY url ORDER BY played_at DESC LIMIT ?",
+                args: [guildId, limit],
+            });
+            return res.rows.map((r) => ({
+                title: r.title, url: r.url, user_tag: r.user_tag, duration: r.duration, played_at: r.played_at,
+            }));
+        },
     };
 }
 
@@ -106,4 +121,8 @@ export async function saveSong(data) {
 
 export async function getHistory(guildId, limit = 10) {
     return (await adapter?.getHistory(guildId, limit)) ?? [];
+}
+
+export async function getRecentSongs(guildId, limit = 10) {
+    return (await adapter?.getRecentSongs(guildId, limit)) ?? [];
 }

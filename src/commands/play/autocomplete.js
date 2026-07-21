@@ -1,5 +1,5 @@
 import { LIMITS } from "../../lib/constants.js";
-import { getHistory } from "../../lib/db.js";
+import { getRecentSongs } from "../../lib/db.js";
 import { log } from "../../lib/logger.js";
 import { getTrackMeta, isSpotifyUrl } from "../../services/music/spotify.js";
 import { searchVideos } from "../../services/music/stream.js";
@@ -11,7 +11,7 @@ export async function autocomplete(interaction) {
     const respond = (items = []) => interaction.respond(items).catch(() => {});
 
     if (query.length < 2) {
-        const recent = await getHistory(interaction.guildId, LIMITS.AUTOCOMPLETE_RESULTS);
+        const recent = await getRecentSongs(interaction.guildId, LIMITS.AUTOCOMPLETE_RESULTS);
         return respond(recent.map((s) => ({ name: s.title.slice(0, 100), value: s.url })));
     }
 
@@ -41,7 +41,7 @@ export async function autocomplete(interaction) {
         return respond(items);
     } catch (err) {
         if (err.message !== "timeout") log.error(`[autocomplete] ${err.message}`);
-        const recent = await getHistory(interaction.guildId, LIMITS.AUTOCOMPLETE_RESULTS);
+        const recent = await getRecentSongs(interaction.guildId, LIMITS.AUTOCOMPLETE_RESULTS);
         return respond(recent.map((s) => ({ name: `↩ ${s.title}`.slice(0, 100), value: s.url })));
     } finally {
         // Cancel the timer so a settled/early-return path can't leave the
