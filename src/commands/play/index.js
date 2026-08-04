@@ -1,6 +1,7 @@
 import { SlashCommandBuilder } from "discord.js";
 import { ensureVoice } from "../../lib/guards.js";
 import { log } from "../../lib/logger.js";
+import { captureError, userFrom } from "../../lib/sentry.js";
 import { enqueue, getOrCreateQueue } from "../../services/music/playback.js";
 import { resolveQuery } from "../../services/music/resolver.js";
 import { playlistQueued, trackQueued } from "../../views/musicEmbeds.js";
@@ -30,6 +31,11 @@ export default {
             resolved = await resolveQuery(query, interaction.user.tag, interaction.user.id);
         } catch (err) {
             log.error(`[play] resolve: ${err.message}`);
+            captureError(err, {
+                tags: { stage: "resolve", command: "play", guild: interaction.guildId },
+                extra: { query },
+                user: userFrom(interaction),
+            });
             return interaction.editReply("Could not find that song or playlist.");
         }
 

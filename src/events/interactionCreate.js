@@ -1,5 +1,6 @@
 import { MessageFlags } from "discord.js";
 import { log } from "../lib/logger.js";
+import { captureError, userFrom } from "../lib/sentry.js";
 import { queues } from "../services/music/guildQueue.js";
 import { nowPlayingControls, nowPlayingEmbed } from "../views/musicEmbeds.js";
 
@@ -44,6 +45,10 @@ export default {
                 await command.autocomplete?.(interaction);
             } catch (err) {
                 log.error(`autocomplete: ${err.message}`);
+                captureError(err, {
+                    tags: { stage: "autocomplete", command: interaction.commandName, guild: interaction.guildId },
+                    user: userFrom(interaction),
+                });
             }
             return;
         }
@@ -57,6 +62,11 @@ export default {
             await command.execute(interaction, client);
         } catch (err) {
             log.error(`/${interaction.commandName} — ${err.message}`);
+            captureError(err, {
+                tags: { stage: "command", command: interaction.commandName, guild: interaction.guildId },
+                extra: { options: interaction.options?.data },
+                user: userFrom(interaction),
+            });
             const msg = { content: "Command failed.", flags: MessageFlags.Ephemeral };
             if (interaction.replied || interaction.deferred) {
                 await interaction.followUp(msg);

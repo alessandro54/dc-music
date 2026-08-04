@@ -7,6 +7,7 @@ import {
 import { TIMEOUTS } from "../../lib/constants.js";
 import { saveSong } from "../../lib/db.js";
 import { log } from "../../lib/logger.js";
+import { captureError, captureWarn } from "../../lib/sentry.js";
 import { createStream, destroyResource, searchVideo } from "./stream.js";
 
 export const queues = new Map();
@@ -44,6 +45,10 @@ export class GuildQueue {
             clearTimeout(this._stallTimeout);
             this._stallTimeout = setTimeout(() => {
                 log.error(`[Queue ${this.guildId}] Stream stalled (buffering > ${TIMEOUTS.STREAM_STALL_MS}ms), skipping`);
+                captureWarn("Stream stalled while buffering", {
+                    tags: { stage: "stall", guild: this.guildId },
+                    extra: { title: this.current?.title, url: this.current?.url, stallMs: TIMEOUTS.STREAM_STALL_MS },
+                });
                 this.player.stop(); // → Idle → advance
             }, TIMEOUTS.STREAM_STALL_MS);
         });
@@ -69,6 +74,10 @@ export class GuildQueue {
 
         this.player.on("error", (err) => {
             log.error(`[Queue ${this.guildId}] Player error: ${err.message}`);
+            captureError(err, {
+                tags: { stage: "player", guild: this.guildId },
+                extra: { title: this.current?.title, url: this.current?.url },
+            });
             this._killStream();
             this.songs.shift();
             if (this.songs.length > 0) this._playNext();
@@ -115,9 +124,10 @@ export class GuildQueue {
         this.resource = null;
         // Reap in the background — callers stay synchronous, but the procs and
         // their stdio pipes are guaranteed to be cleaned up (SIGTERM→SIGKILL).
-        destroyResource(resource).catch((err) =>
-            log.error(`[Queue ${this.guildId}] killStream: ${err.message}`),
-        );
+        destroyResource(resource).catch((err) => {
+            log.error(`[Queue ${this.guildId}] killStream: ${err.message}`);
+            captureError(err, { tags: { stage: "teardown", guild: this.guildId } });
+        });
     }
 
     async add(song) {
@@ -143,10 +153,14 @@ export class GuildQueue {
                 const info = await searchVideo(`${name} ${artists[0].name}`);
                 song = { ...song, url: info.url, title: info.title, duration: info.duration, spotifyTrack: null };
                 this.songs[0] = song;
-            } catch {
+            } catch (err) {
                 log.error(
                     `[Queue ${this.guildId}] Could not resolve Spotify track: ${song.title}`,
                 );
+                captureError(err, {
+                    tags: { stage: "resolve", guild: this.guildId },
+                    extra: { title: song.title, spotifyTrack: song.spotifyTrack?.name },
+                });
                 this.songs.shift();
                 if (this.songs.length > 0) await this._playNext();
                 else this.playing = false;
@@ -173,6 +187,10 @@ export class GuildQueue {
             });
         } catch (err) {
             log.error(`[Queue ${this.guildId}] Stream: ${err.message}`);
+            captureError(err, {
+                tags: { stage: "stream", guild: this.guildId },
+                extra: { title: song.title, url: song.url, requestedBy: song.requestedBy },
+            });
             this.songs.shift();
             if (this.songs.length > 0) await this._playNext();
             else this.playing = false;
@@ -190,6 +208,10 @@ export class GuildQueue {
             return true;
         } catch (err) {
             log.error(`[Queue ${this.guildId}] Seek error: ${err.message}`);
+            captureError(err, {
+                tags: { stage: "seek", guild: this.guildId },
+                extra: { title: this.current?.title, url: this.current?.url, seconds },
+            });
             return false;
         }
     }

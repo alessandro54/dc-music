@@ -5,6 +5,7 @@
     "@discordjs/voice": "npm:@discordjs/voice@^0.19.0",
     "@libsql/client": "npm:@libsql/client@^0.15.0",
     "@libsql/client/web": "npm:@libsql/client@^0.15.0/web",
+    "@sentry/deno": "npm:@sentry/deno@^10.69.0",
     "discord.js": "npm:discord.js@^14.16.0",
     "opusscript": "npm:opusscript@^0.1.1",
     "pngjs": "npm:pngjs@^7.0.0",

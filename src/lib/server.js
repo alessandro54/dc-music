@@ -2,6 +2,7 @@ import CONFIG_HTML from "./config.html" with { type: "text" };
 import { getConfig, setConfig } from "./config.js";
 import HTML from "./dashboard.html" with { type: "text" };
 import { log } from "./logger.js";
+import { captureError } from "./sentry.js";
 
 function checkAuth(req, url) {
     const token = Deno.env.get("DASHBOARD_TOKEN");
@@ -46,6 +47,11 @@ export function startServer(port, queues, client) {
             const host = Deno.env.get("DASHBOARD_HOST") ?? hostname;
             const qs = token ? `?token=${token}` : "";
             log.info(`dashboard → http://${host}:${p}/${qs}`);
+        },
+        onError: (err) => {
+            log.error(`[dashboard] ${err.message}`);
+            captureError(err, { tags: { stage: "dashboard" } });
+            return new Response("Internal error", { status: 500 });
         },
     }, async (req) => {
         const url = new URL(req.url);

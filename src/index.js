@@ -6,15 +6,20 @@ import ready from "./events/ready.js";
 import { COMMIT, COMMIT_URL } from "./lib/buildInfo.js";
 import { initDb } from "./lib/db.js";
 import { log } from "./lib/logger.js";
+// Importing sentry.js runs Sentry.init — it happens during module evaluation,
+// before any of the code below can throw.
+import { captureError } from "./lib/sentry.js";
 import { startServer } from "./lib/server.js";
 import { queues, setClient } from "./services/music/guildQueue.js";
 
-process.on("unhandledRejection", (err) =>
-    log.error(`unhandledRejection: ${err}`),
-);
-process.on("uncaughtException", (err) =>
-    log.error(`uncaughtException: ${err}`),
-);
+process.on("unhandledRejection", (err) => {
+    log.error(`unhandledRejection: ${err}`);
+    captureError(err, { tags: { stage: "process" }, level: "error" });
+});
+process.on("uncaughtException", (err) => {
+    log.error(`uncaughtException: ${err}`);
+    captureError(err, { tags: { stage: "process" }, level: "fatal" });
+});
 
 log.info(`revision: ${COMMIT_URL ?? COMMIT}`);
 
