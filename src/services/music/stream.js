@@ -1,7 +1,9 @@
 import { Readable } from "node:stream";
 import { createAudioResource, StreamType } from "@discordjs/voice";
 import { Innertube } from "youtubei.js";
+import { getSongMeta } from "../../lib/db.js";
 import { log } from "../../lib/logger.js";
+import { captureError } from "../../lib/sentry.js";
 
 const YTDLP = Deno.env.get("YTDLP_PATH") || `${import.meta.dirname}/yt-dlp`;
 
@@ -90,33 +92,120 @@ function fmtSecs(s) {
         : `${m}:${String(s % 60).padStart(2, "0")}`;
 }
 
+// Metadata is immutable per video, so a plain Map keyed by id is enough. Capped
+// so a long-lived process can't grow it without bound.
+const META_CACHE_MAX = 500;
+const metaCache = new Map();
+
+function cacheMeta(videoId, info) {
+    if (metaCache.size >= META_CACHE_MAX) metaCache.delete(metaCache.keys().next().value);
+    metaCache.set(videoId, info);
+    return info;
+}
+
+// oEmbed is unauthenticated and — unlike Innertube's `getBasicInfo` — not
+// bot-gated on this datacenter IP (measured: 37ms, HTTP 200, where yt-dlp
+// takes 4-5s). No duration in the payload, so that gets backfilled.
+async function _oembedVideoInfo(url, videoId) {
+    const endpoint = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+    const res = await fetch(endpoint, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) throw new Error(`oembed ${res.status}`);
+    const j = await res.json();
+    if (!j.title) throw new Error("oembed returned no title");
+    return { title: j.title, url, duration: null, thumbnail: j.thumbnail_url ?? ytThumb(videoId) };
+}
+
 export async function fetchVideoInfo(url) {
     const videoId = extractVideoId(url);
     if (!videoId) throw new Error("invalid YouTube URL");
 
-    // Fast path: in-process Innertube (no subprocess). On datacenter IPs
-    // (e.g. Oracle Cloud) YouTube bot-detection can return a video with no
-    // title — fall back to the cookie-aware yt-dlp path that streaming uses.
+    const cached = metaCache.get(videoId);
+    if (cached) return cached;
+
+    // Anything played before already has its title and duration in the DB.
+    const known = await getSongMeta(url);
+    if (known?.title) {
+        return cacheMeta(videoId, {
+            title: known.title,
+            url,
+            duration: known.duration ?? null,
+            thumbnail: ytThumb(videoId),
+        });
+    }
+
+    // In-process Innertube first — when it isn't bot-gated it returns title and
+    // duration together in ~60ms. On this IP most videos come back
+    // LOGIN_REQUIRED with no title, so treat it as a lucky fast path, not the
+    // primary one.
     try {
         const yt = await getInnertube();
         const info = await yt.getBasicInfo(videoId);
         const title = info.basic_info?.title;
+        const duration = info.basic_info?.duration;
         if (title) {
-            return { title, url, duration: fmtSecs(info.basic_info?.duration ?? 0), thumbnail: ytThumb(videoId) };
+            return cacheMeta(videoId, {
+                title,
+                url,
+                duration: duration ? fmtSecs(duration) : null,
+                thumbnail: ytThumb(videoId),
+            });
         }
     } catch (err) {
-        log.warn(`[stream] Innertube getBasicInfo failed, falling back to yt-dlp: ${err.message}`);
+        log.warn(`[stream] Innertube getBasicInfo failed: ${err.message}`);
     }
-    return _ytdlpVideoInfo(url, videoId);
+
+    try {
+        return cacheMeta(videoId, await _oembedVideoInfo(url, videoId));
+    } catch (err) {
+        log.warn(`[stream] oEmbed failed, falling back to yt-dlp: ${err.message}`);
+    }
+
+    // Private/unlisted/region-locked — only the cookie-aware extractor can see it.
+    return cacheMeta(videoId, await _ytdlpVideoInfo(url, videoId));
 }
 
-// yt-dlp metadata fallback — same extractor + cookies as playback, so it works
-// whenever streaming does.
+// Fill in a duration the fast paths couldn't provide, off the critical path.
+// Mutates the queued song in place so /np and /queue pick it up on next render.
+export async function backfillDuration(song) {
+    const videoId = extractVideoId(song.url);
+    if (!videoId || song.duration) return;
+    try {
+        const info = await _ytdlpVideoInfo(song.url, videoId);
+        song.duration = info.duration;
+        const cached = metaCache.get(videoId);
+        if (cached) cached.duration = info.duration;
+    } catch (err) {
+        log.warn(`[stream] duration backfill failed for ${song.url}: ${err.message}`);
+    }
+}
+
+// Metadata needs a title and a duration — not a playable format URL. Pinning a
+// single lightweight client and skipping the player JS avoids yt-dlp probing
+// clients one by one, and --ignore-no-formats-error keeps it from bailing when
+// that client serves no usable format. Measured on the prod IP: 1.4-1.8s vs
+// 3.8s for the full streaming arg set, same title and duration.
+const META_ARGS = [
+    "--ignore-no-formats-error",
+    "--extractor-args", "youtube:player_client=ios;player_skip=js",
+];
+
+// yt-dlp metadata fallback — used when the cache, the DB, Innertube and oEmbed
+// all come up empty (private/unlisted/region-locked), and for duration backfill.
+// Retries with the full streaming arg set, which sees whatever playback can see.
 async function _ytdlpVideoInfo(url, videoId) {
+    try {
+        return await _dumpJson(url, videoId, META_ARGS);
+    } catch (err) {
+        log.warn(`[stream] fast metadata failed, retrying with full args: ${err.message}`);
+        return _dumpJson(url, videoId, [...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS]);
+    }
+}
+
+async function _dumpJson(url, videoId, extraArgs) {
     const { code, stdout, stderr } = await new Deno.Command(YTDLP, {
         args: [
             "--no-playlist", "--dump-json", "--quiet", "--no-warnings", "--skip-download",
-            ...COOKIES_ARGS, ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
+            ...COOKIES_ARGS, ...CACHE_ARGS, ...extraArgs,
             url,
         ],
         stdout: "piped",
@@ -229,11 +318,27 @@ function _ytdlpStream(url, seekSeconds) {
     args.push(url);
 
     const ytdlp = new Deno.Command(YTDLP, { args, stdout: "piped", stderr: "piped" }).spawn();
+    // The stream is handed back before yt-dlp has produced a byte, so a failed
+    // extraction never throws here — it surfaces as a silent track (the stall
+    // watchdog skips it). Drain stderr and report a non-zero exit so the actual
+    // cause (expired cookies, 403, format gone) lands in Sentry instead of
+    // scrolling past in the logs.
     (async () => {
+        const tail = [];
         for await (const chunk of ytdlp.stderr) {
             const msg = dec.decode(chunk).trim();
-            if (msg) log.error(`[yt-dlp] ${msg}`);
+            if (!msg) continue;
+            log.error(`[yt-dlp] ${msg}`);
+            tail.push(msg);
+            if (tail.length > 20) tail.shift();
         }
+        const status = await ytdlp.status.catch(() => null);
+        // A signal means we killed it (skip/stop/seek) — expected, not an error.
+        if (!status || status.success || status.signal) return;
+        captureError(new Error(`yt-dlp exited ${status.code}: ${tail[tail.length - 1] ?? "no stderr"}`), {
+            tags: { stage: "ytdlp", exitCode: String(status.code) },
+            extra: { url, seekSeconds, stderr: tail.join("\n") },
+        });
     })();
 
     if (seekSeconds > 0) {

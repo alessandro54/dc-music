@@ -1,6 +1,6 @@
 import { LIMITS } from "../../lib/constants.js";
 import { isSpotifyUrl, resolveSpotify } from "./spotify.js";
-import { fetchPlaylistItems, fetchVideoInfo, searchVideo } from "./stream.js";
+import { backfillDuration, fetchPlaylistItems, fetchVideoInfo, searchVideo } from "./stream.js";
 
 const YOUTUBE_RE = /(?:youtube\.com|youtu\.be)/;
 const YOUTUBE_LIST_RE = /[?&]list=/;
@@ -32,7 +32,12 @@ export async function resolveQuery(query, requestedBy, requestedById) {
     }
 
     if (YOUTUBE_RE.test(query)) {
-        return { songs: [ytSong(await fetchVideoInfo(query), requestedBy, requestedById)], playlistName: null };
+        const song = ytSong(await fetchVideoInfo(query), requestedBy, requestedById);
+        // The fast metadata paths (oEmbed / gated Innertube) have no duration.
+        // Ask yt-dlp for it in the background rather than making the user wait
+        // seconds for a number that only decorates the embed.
+        if (!song.duration) void backfillDuration(song);
+        return { songs: [song], playlistName: null };
     }
 
     return { songs: [ytSong(await searchVideo(query), requestedBy, requestedById)], playlistName: null };

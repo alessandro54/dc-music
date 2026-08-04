@@ -1,4 +1,5 @@
 import { log } from "./logger.js";
+import { captureError } from "./sentry.js";
 
 let adapter;
 
@@ -30,6 +31,10 @@ async function initSqlite(path) {
     const selectDistinct = db.prepare(
         "SELECT title, url, user_tag, duration, MAX(played_at) AS played_at FROM song_history WHERE guild_id = ? GROUP BY url ORDER BY played_at DESC LIMIT ?",
     );
+    // Metadata of an already-played track — beats re-asking yt-dlp (seconds).
+    const selectMeta = db.prepare(
+        "SELECT title, duration FROM song_history WHERE url = ? AND title IS NOT NULL ORDER BY played_at DESC LIMIT 1",
+    );
     log.db(`SQLite ready — ${path}`);
     return {
         saveSong: ({ guildId, userId, userTag, title, url, duration }) => {
@@ -39,10 +44,14 @@ async function initSqlite(path) {
                 if (!dedup.get(n(guildId), n(url))) {
                     insert.run(n(guildId), n(userId), n(userTag), n(title), n(url), duration == null ? null : String(duration));
                 }
-            } catch (err) { log.error(`saveSong: ${err.message}`); }
+            } catch (err) {
+                log.error(`saveSong: ${err.message}`);
+                captureError(err, { tags: { stage: "db", adapter: "sqlite" }, extra: { guildId, url } });
+            }
         },
         getHistory: (guildId, limit) => select.all(guildId, limit),
         getRecentSongs: (guildId, limit) => selectDistinct.all(guildId, limit),
+        getSongMeta: (url) => selectMeta.get(url) ?? null,
     };
 }
 
@@ -80,7 +89,10 @@ async function initTurso(url, authToken) {
                         args: [n(guildId), n(userId), n(userTag), n(title), n(url), duration == null ? null : String(duration)],
                     });
                 }
-            } catch (err) { log.error(`saveSong: ${err.message}`); }
+            } catch (err) {
+                log.error(`saveSong: ${err.message}`);
+                captureError(err, { tags: { stage: "db", adapter: "turso" }, extra: { guildId, url } });
+            }
         },
         getHistory: async (guildId, limit) => {
             const res = await db.execute({
@@ -100,6 +112,15 @@ async function initTurso(url, authToken) {
             return res.rows.map((r) => ({
                 title: r.title, url: r.url, user_tag: r.user_tag, duration: r.duration, played_at: r.played_at,
             }));
+        },
+        // Metadata of an already-played track — beats re-asking yt-dlp (seconds).
+        getSongMeta: async (url) => {
+            const res = await db.execute({
+                sql: "SELECT title, duration FROM song_history WHERE url = ? AND title IS NOT NULL ORDER BY played_at DESC LIMIT 1",
+                args: [url],
+            });
+            const r = res.rows[0];
+            return r ? { title: r.title, duration: r.duration } : null;
         },
     };
 }
@@ -125,4 +146,12 @@ export async function getHistory(guildId, limit = 10) {
 
 export async function getRecentSongs(guildId, limit = 10) {
     return (await adapter?.getRecentSongs(guildId, limit)) ?? [];
+}
+
+export async function getSongMeta(url) {
+    try {
+        return (await adapter?.getSongMeta(url)) ?? null;
+    } catch {
+        return null; // metadata lookup is an optimisation — never fail a /play over it
+    }
 }

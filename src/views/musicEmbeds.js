@@ -10,7 +10,8 @@ export function trackQueued(song, isFirst, position) {
         .setTitle(isFirst ? "🎵 Now Playing" : "➕ Added to Queue")
         .setDescription(`**${song.title}**`)
         .addFields(
-            { name: "Duration", value: song.duration, inline: true },
+            // duration can still be backfilling — an empty field value throws.
+            { name: "Duration", value: song.duration ?? "—", inline: true },
             { name: "Requested by", value: song.requestedBy, inline: true },
             { name: "Position", value: isFirst ? "Now" : `#${position}`, inline: true },
         );
@@ -61,7 +62,7 @@ export function queueEmbed(queue) {
     const { songs } = queue;
     const lines = songs
         .slice(0, LIMITS.QUEUE_DISPLAY)
-        .map((s, i) => `${i === 0 ? "▶️" : `\`${i}.\``} **${s.title}** \`${s.duration}\` — ${s.requestedBy}`)
+        .map((s, i) => `${i === 0 ? "▶️" : `\`${i}.\``} **${s.title}** \`${s.duration ?? "—"}\` — ${s.requestedBy}`)
         .join("\n");
     const more = songs.length > LIMITS.QUEUE_DISPLAY
         ? `\n\n*...and ${songs.length - LIMITS.QUEUE_DISPLAY} more*`
