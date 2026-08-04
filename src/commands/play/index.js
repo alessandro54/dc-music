@@ -7,6 +7,17 @@ import { resolveQuery } from "../../services/music/resolver.js";
 import { playlistQueued, trackQueued } from "../../views/musicEmbeds.js";
 import { autocomplete } from "./autocomplete.js";
 
+// Discord kills an interaction that isn't acknowledged within 3s. Resolving
+// usually finishes in ~30ms (raced metadata sources), so waiting briefly lets
+// the final embed BE the acknowledgement — one round-trip instead of two.
+// Measured on prod: a round-trip costs 416-908ms while resolving costs 28ms,
+// so the "🔍 Searching…" placeholder was most of what the user waited for.
+// The margin below 3s covers the reply's own transit.
+const FAST_PATH_MS = 2000;
+
+const SLOW = Symbol("resolve-too-slow");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 export default {
     autocomplete,
     data: new SlashCommandBuilder()
@@ -26,22 +37,23 @@ export default {
         const query = interaction.options.getString("query");
         const started = performance.now();
 
-        // Acknowledge and resolve concurrently. The ACK is a round-trip to
-        // Discord (measured 581-704ms on prod — longer than the resolve itself)
-        // and resolving doesn't depend on it, so awaiting it first made every
-        // /play pay both in series. Only editReply needs the ACK to have landed.
-        let ackMs = null;
-        const ack = interaction.reply({ content: `🔍 Searching for **${query}**…` })
-            .then(() => {
-                ackMs = Math.round(performance.now() - started);
-            });
-        // Parked until after the resolve — without a handler now, a failed ACK
-        // would surface as an unhandledRejection before anyone awaits it.
-        ack.catch(() => {});
+        const pending = resolveQuery(query, interaction.user.tag, interaction.user.id);
+        // Parked immediately: if the race below picks the timeout, nothing is
+        // awaiting this yet and a rejection would surface as unhandledRejection.
+        pending.catch(() => {});
 
         let resolved;
+        let placeholder = null; // set only when we fall back to acknowledging first
         try {
-            resolved = await resolveQuery(query, interaction.user.tag, interaction.user.id);
+            resolved = await Promise.race([pending, sleep(FAST_PATH_MS).then(() => SLOW)]);
+
+            if (resolved === SLOW) {
+                // Slow query (private video, playlist dump, cold yt-dlp). Claim
+                // the interaction before Discord expires it, then edit it later.
+                placeholder = interaction.reply({ content: `🔍 Searching for **${query}**…` });
+                placeholder.catch(() => {});
+                resolved = await pending;
+            }
         } catch (err) {
             log.error(`[play] resolve: ${err.message}`);
             captureError(err, {
@@ -49,40 +61,59 @@ export default {
                 extra: { query },
                 user: userFrom(interaction),
             });
-            await ack.catch(() => {});
-            return interaction.editReply("Could not find that song or playlist.").catch(() => {});
+            return respond(interaction, placeholder, "Could not find that song or playlist.");
         }
+
         const resolveMs = Math.round(performance.now() - started);
 
-        // editReply requires the ACK; whatever is left of it is the real cost.
-        // A failed ACK means the interaction is gone (expired/already answered),
-        // so editReply can't work either — queue the track anyway and skip the
-        // reply rather than dropping the user's request over a dead token.
-        let acked = true;
-        try {
-            await ack;
-        } catch (err) {
-            acked = false;
-            log.error(`[play] ack: ${err.message}`);
-        }
-        log.music(log.gray(`resolved in ${resolveMs}ms · ack ${ackMs ?? "failed"}ms · ready ${Math.round(performance.now() - started)}ms`));
-
-        const reply = (payload) => (acked ? interaction.editReply(payload).catch(() => {}) : null);
-
         const { songs, playlistName } = resolved;
-        if (!songs.length) return reply("No results found.");
+        if (!songs.length) return respond(interaction, placeholder, "No results found.");
 
         const queue = getOrCreateQueue(interaction, voiceChannel);
         const result = enqueue(queue, songs, playlistName);
 
+        let payload;
         switch (result.kind) {
             case "duplicate":
-                return reply(`**${result.song.title}** is already in the queue at position #${result.position}.`);
+                payload = `**${result.song.title}** is already in the queue at position #${result.position}.`;
+                break;
             case "single":
                 log.music(`Enqueued ${log.bold(result.song.title)} ${log.gray(`by ${interaction.user.tag}`)}`);
-                return reply({ embeds: [trackQueued(result.song, result.isFirst, result.position)] });
+                payload = { embeds: [trackQueued(result.song, result.isFirst, result.position)] };
+                break;
             case "many":
-                return reply({ embeds: [playlistQueued(result.count, result.playlistName, interaction.user.tag)] });
+                payload = { embeds: [playlistQueued(result.count, result.playlistName, interaction.user.tag)] };
+                break;
         }
+
+        await respond(interaction, placeholder, payload);
+        log.music(
+            log.gray(
+                `resolved in ${resolveMs}ms · ${placeholder ? "2 round-trips" : "1 round-trip"} · ready ${
+                    Math.round(performance.now() - started)
+                }ms`,
+            ),
+        );
     },
 };
+
+// One reply, whichever phase we're in: if the interaction was already claimed by
+// a placeholder we have to edit it, otherwise this reply IS the acknowledgement.
+// Either call can fail on a dead token — the track is queued regardless, so a
+// lost reply must not throw away the user's request.
+async function respond(interaction, placeholder, payload) {
+    if (placeholder) {
+        try {
+            await placeholder;
+        } catch (err) {
+            log.error(`[play] ack: ${err.message}`);
+            return; // token is gone; editReply can't work either
+        }
+        return interaction.editReply(payload).catch((err) => {
+            log.error(`[play] editReply: ${err.message}`);
+        });
+    }
+    return interaction.reply(payload).catch((err) => {
+        log.error(`[play] reply: ${err.message}`);
+    });
+}

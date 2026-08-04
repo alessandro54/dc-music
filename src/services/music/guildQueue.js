@@ -37,6 +37,7 @@ export class GuildQueue {
         this._stallTimeout = null;
         this.resource = null;
         this.seekOffset = 0;
+        this._streamStartedAt = null;
 
         // Stall watchdog: yt-dlp can be slow to first byte (or hang silently) on
         // a datacenter IP, leaving the player stuck in Buffering with no error and
@@ -52,7 +53,17 @@ export class GuildQueue {
                 this.player.stop(); // → Idle → advance
             }, TIMEOUTS.STREAM_STALL_MS);
         });
-        this.player.on(AudioPlayerStatus.Playing, () => clearTimeout(this._stallTimeout));
+        this.player.on(AudioPlayerStatus.Playing, () => {
+            clearTimeout(this._stallTimeout);
+            // Time to first audio — the number the user actually waits through.
+            // `spawn` only covers forking yt-dlp; the extraction that follows
+            // (player JS, nsig, PO token, first bytes) is the real cost and was
+            // previously invisible.
+            if (this._streamStartedAt !== null) {
+                log.music(log.gray(`audio in ${Math.round(performance.now() - this._streamStartedAt)}ms`));
+                this._streamStartedAt = null;
+            }
+        });
 
         this.player.on(AudioPlayerStatus.Idle, () => {
             clearTimeout(this._stallTimeout);
@@ -170,6 +181,7 @@ export class GuildQueue {
 
         try {
             const started = performance.now();
+            this._streamStartedAt = started;
             // The streaming extraction reports the duration for free — no second
             // yt-dlp needed for the track that's actually playing.
             const resource = await createStream(song.url, this.seekOffset, (duration) => {
