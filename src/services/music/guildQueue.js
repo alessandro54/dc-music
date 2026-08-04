@@ -8,7 +8,7 @@ import { TIMEOUTS } from "../../lib/constants.js";
 import { saveSong } from "../../lib/db.js";
 import { log } from "../../lib/logger.js";
 import { captureError, captureWarn } from "../../lib/sentry.js";
-import { createStream, destroyResource, searchVideo } from "./stream.js";
+import { createStream, destroyResource, prefetchFormatUrl, searchVideo } from "./stream.js";
 
 export const queues = new Map();
 
@@ -38,6 +38,7 @@ export class GuildQueue {
         this.resource = null;
         this.seekOffset = 0;
         this._streamStartedAt = null;
+        this._prefetching = false;
 
         // Stall watchdog: yt-dlp can be slow to first byte (or hang silently) on
         // a datacenter IP, leaving the player stuck in Buffering with no error and
@@ -63,6 +64,7 @@ export class GuildQueue {
                 log.music(log.gray(`audio in ${Math.round(performance.now() - this._streamStartedAt)}ms`));
                 this._streamStartedAt = null;
             }
+            this._prefetchNext();
         });
 
         this.player.on(AudioPlayerStatus.Idle, () => {
@@ -214,6 +216,30 @@ export class GuildQueue {
             if (this.songs.length > 0) await this._playNext();
             else this.playing = false;
         }
+    }
+
+    // Resolve the next track's media URL while the current one is already
+    // streaming, so its play becomes a plain GET instead of a ~7.6s extraction.
+    //
+    // Deliberately fired from Playing, never from the start of a track: an
+    // extraction running alongside a *starting* stream is what cost 6.9s of
+    // silence before (2 cores). Once audio is flowing, playback is passthrough
+    // and mostly idle, so there is headroom for one background extraction.
+    _prefetchNext() {
+        if (this._prefetching) return;
+        const next = this.songs[1];
+        // Spotify tracks have no YouTube URL until _playNext resolves them.
+        if (!next?.url || next.spotifyTrack) return;
+
+        this._prefetching = true;
+        prefetchFormatUrl(next.url)
+            .then((warmed) => {
+                if (warmed) log.music(log.gray(`prefetched ${next.title}`));
+            })
+            .catch(() => {}) // best-effort: a failed prefetch just means a normal play
+            .finally(() => {
+                this._prefetching = false;
+            });
     }
 
     async seek(seconds) {

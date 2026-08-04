@@ -283,6 +283,15 @@ sudo dokku enter music-bot web /opt/ytdlp/bin/yt-dlp \
 ```
 Prints the title = the full chain works.
 
+### yt-dlp cache volume
+`/data/ytdlp-cache` is bind-mounted so the player JS and signature caches survive
+a redeploy (the container filesystem does not):
+```bash
+sudo dokku storage:mount music-bot \
+  /var/lib/dokku/data/storage/music-bot-ytdlp-cache:/data/ytdlp-cache
+```
+Check with `dokku storage:list music-bot`. Takes effect on the next deploy.
+
 ### Staying alive indefinitely
 - A **weekly scheduled CI rebuild** (Mon 06:00 UTC, `CACHEBUST` busts the pip
   layer) keeps yt-dlp + EJS current with YouTube changes — no manual step.

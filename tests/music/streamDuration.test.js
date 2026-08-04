@@ -112,7 +112,8 @@ Deno.test("createStream reports the duration the streaming extraction printed", 
         });
 
         const args = spawned[0].args;
-        assertEquals(argAfter(args, "--print-to-file"), "%(duration)s");
+        // Two lines now: the duration, then the media URL for the format cache.
+        assertEquals(argAfter(args, "--print-to-file"), "%(duration)s\n%(urls)s");
         assertEquals(args[args.indexOf("--print-to-file") + 2], SIDECAR);
 
         // yt-dlp writes the file a second or two into the extraction.
