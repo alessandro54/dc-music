@@ -135,6 +135,7 @@ sudo dokku config:set music-bot \
   SPOTIFY_CLIENT_SECRET=<value> \
   SPOTIFY_REFRESH_TOKEN=<value> \
   DASHBOARD_TOKEN=$(openssl rand -hex 24) \
+  SENTRY_DSN=<sentry dsn> \
   NODE_ENV=production
 ```
 
@@ -148,6 +149,17 @@ Notes:
 - **`DASHBOARD_TOKEN`** protects the dashboard's control endpoints
   (skip/pause/stop). Required before exposing the dashboard publicly. Access it
   at `https://music.chumpitaz.dev/?token=<value>`.
+- **`SENTRY_DSN`** — optional. When unset the SDK is a no-op (local dev stays
+  quiet); when set, swallowed failures (stream drops, yt-dlp non-zero exits,
+  command errors, DB writes) become issues in the `music-bot` project of the
+  `alessandro54` Sentry org, tagged with `stage`, `guild`, `command` and
+  released against the deployed commit SHA. The yt-dlp stderr tail rides along,
+  so an expired `YOUTUBE_COOKIES` is self-diagnosing.
+  Dev and prod share one project and are split by Sentry **environment**:
+  `NODE_ENV=production` (set in the Dockerfile and in `dokku config:set`) →
+  `production`, anything else → `development`. Filter with `environment:production`
+  in the issue stream, and scope alerts to it so local runs never page you.
+  `SENTRY_ENVIRONMENT` overrides the derived value if a third env ever appears.
 - **`SPOTIFY_REFRESH_TOKEN`** — Spotify's Client Credentials flow
   (`SPOTIFY_CLIENT_ID`/`SECRET`) can read tracks and albums but no longer
   playlist contents (Spotify policy change). Playlist URLs need a
@@ -265,6 +277,13 @@ Prints the title = the full chain works.
 ### Staying alive indefinitely
 - A **weekly scheduled CI rebuild** (Mon 06:00 UTC, `CACHEBUST` busts the pip
   layer) keeps yt-dlp + EJS current with YouTube changes — no manual step.
+  The install uses `pip install -U --pre yt-dlp`, i.e. the **nightly** channel:
+  YouTube extractor fixes ship there first and stable can trail by weeks (on
+  2026-08-04 stable was `2026.07.04`, nightly `2026.07.23`), so stable-only was
+  stale for precisely the breakage that takes playback down. Trade-off: a bad
+  nightly can sit for up to a week — `workflow_dispatch` the workflow to rebuild
+  on demand. Verify what's live with
+  `sudo docker exec music-bot.web.1 yt-dlp --version`.
 - The **only** recurring manual task is re-exporting cookies when they finally
   expire (you'll see `Sign in to confirm` in the logs). POT keeps that rare.
 - Occasionally bump the provider image + Dockerfile plugin pin together.

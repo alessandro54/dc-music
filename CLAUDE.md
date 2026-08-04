@@ -12,7 +12,7 @@ deploy/runbook in `docs/DEPLOY.md`.
 - Deno (runtime, local dev + production)
 - Docker (deployment) — Dokku `git:from-image` from GHCR
 - youtubei.js (Innertube) — fast-path YouTube search + metadata (falls back to yt-dlp)
-- yt-dlp (pip-installed in image) — audio streaming + playlist dump + metadata fallback
+- yt-dlp (pip-installed in image, **nightly channel** via `--pre`) — audio streaming + playlist dump + metadata fallback
 - bgutil PO-token provider (Docker sidecar) + EJS solver — YouTube bot-detection / nsig bypass
 - ffmpeg — transcode on seek only
 
@@ -39,6 +39,8 @@ YTDLP_POT_BASE_URL=          # http://bgutil-provider:4416 — PO-token provider
 YOUTUBE_COOKIES=             # Netscape cookies — REQUIRED on this datacenter IP (LOGIN_REQUIRED)
 DASHBOARD_TOKEN=             # gates the web dashboard control endpoints
 OWNER_ID=                    # Discord user id allowed to run /debug (admin-only + owner-gated)
+SENTRY_DSN=                  # optional — error monitoring (org alessandro54, project music-bot); unset = SDK no-op
+# SENTRY_ENVIRONMENT=        # optional override; defaults to NODE_ENV=production ? production : development
 # DB_URL=sqlite:<path>       # only if not using Turso (local dev fallback ./bot.db)
 ```
 
@@ -54,7 +56,7 @@ src/
              spotify, resolver (query → songs), playback (getOrCreateQueue/enqueue)
   views/     response/embed builders (musicEmbeds)
   lib/       shared helpers: guards (interaction guards), utils (formatting), db, embeds,
-             constants, logger, server, buildInfo, config
+             constants, logger, server, buildInfo, config, sentry (error monitoring)
 ```
 
 Keep commands dumb: validate input, delegate to a service, render a view. Services have no
@@ -82,7 +84,7 @@ CI (`.github/workflows/deploy.yml`) runs on push to `main` (when `src/**/*.js`, 
 1. Build image on a **native arm64 runner** (`ubuntu-24.04-arm`), push to `ghcr.io/alessandro54/discord-music`
 2. SSH into the Dokku host (`appleboy/ssh-action`) → `sudo dokku git:from-image music-bot <image>:<sha>`
 
-Scheduled runs pass a `CACHEBUST` build-arg so the pip layer re-pulls the latest yt-dlp; pushes keep the layer cached for fast builds.
+Scheduled runs pass a `CACHEBUST` build-arg so the pip layer re-pulls the latest yt-dlp; pushes keep the layer cached for fast builds. The pip install uses `--pre` (nightly) — YouTube extractor fixes land there first and stable trails by weeks, so a stable-only image is effectively stale for exactly the breakage that matters. Check what's actually running with `sudo docker exec music-bot.web.1 yt-dlp --version`.
 
 **Pushing to `main` triggers a production deploy that restarts the live bot. Never push without explicit approval.**
 
@@ -95,7 +97,7 @@ DB is **Turso** (remote) — no volume. See `docs/DEPLOY.md` for the full setup,
 - Playback is sequential — only one yt-dlp alive at a time.
 
 ## Audio Pipeline (`src/services/`)
-- `fetchVideoInfo` (`stream.js`) → tries **Innertube** `getBasicInfo` first (in-process, no subprocess); on empty/failure falls back to **yt-dlp** `--dump-json` (the cookie/POT/EJS-aware path). On this datacenter IP Innertube metadata is `LOGIN_REQUIRED`, so the fallback is the live path.
+- `fetchVideoInfo` (`stream.js`) → **in-memory cache → `song_history` row → Innertube `getBasicInfo` → oEmbed → yt-dlp `--dump-json`**. Measured on the prod IP: Innertube metadata is `LOGIN_REQUIRED` for ~5 of 6 videos (60ms, no title), oEmbed answers in ~37ms, yt-dlp takes 3.7–5.0s. oEmbed carries no duration, so `resolver.js` kicks `backfillDuration` in the background and mutates the queued song once yt-dlp answers — `duration` is therefore `null` for a few seconds and every view must tolerate it.
 - `searchVideos` → still Innertube.
 - `createStream` → **yt-dlp** subprocess streams webm/opus (`StreamType.WebmOpus`, no transcode). Seek path pipes through ffmpeg.
 - `fetchPlaylistItems` → yt-dlp `--flat-playlist --dump-json`.
