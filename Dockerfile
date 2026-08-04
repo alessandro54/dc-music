@@ -33,9 +33,17 @@ ARG CACHEBUST=
 # fixes land in nightly first and stable can trail it by weeks — on 2026-08-04
 # stable was 2026.07.04 while nightly was 2026.07.23. bgutil stays on its pin,
 # so --pre only affects yt-dlp.
+#
+# [default] (not bare yt-dlp) pulls the recommended dependency group: yt-dlp-ejs
+# — the nsig/signature solver, pinned to the exact version this yt-dlp requires —
+# plus the requests/urllib3/websockets/brotli HTTP stack. Bare `pip install
+# yt-dlp` declares no dependencies at all, which left the image fetching the EJS
+# solver from GitHub at runtime (--remote-components). That was a hard runtime
+# dependency on GitHub for every cold container: no solver, no YouTube audio.
 RUN python3 -m venv /opt/ytdlp \
-    && /opt/ytdlp/bin/pip install --no-cache-dir -U --pre yt-dlp "bgutil-ytdlp-pot-provider==1.3.1" \
-    && ln -s /opt/ytdlp/bin/yt-dlp /usr/local/bin/yt-dlp
+    && /opt/ytdlp/bin/pip install --no-cache-dir -U --pre "yt-dlp[default]" "bgutil-ytdlp-pot-provider==1.3.1" \
+    && ln -s /opt/ytdlp/bin/yt-dlp /usr/local/bin/yt-dlp \
+    && /opt/ytdlp/bin/python -c "import yt_dlp_ejs"
 
 COPY src/ ./src/
 

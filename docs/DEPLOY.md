@@ -233,10 +233,19 @@ client returns `LOGIN_REQUIRED`. Three pieces are needed together:
 2. **PO-token provider** — supplies GVS PO tokens and refreshes the session (so
    cookies last far longer); runs as a Docker sidecar.
 3. **EJS solver** — solves YouTube's signature / `n`-sig challenge, else only
-   non-audio formats come back. Enabled in code via `--remote-components ejs:github`.
+   non-audio formats come back. Ships **in the image** as the `yt-dlp-ejs`
+   package and is picked up automatically; it runs on the deno already present.
 
-The image installs yt-dlp + the `bgutil-ytdlp-pot-provider` **plugin** via pip
-(not the standalone binary) so the plugin is auto-discovered.
+The image installs `yt-dlp[default]` + the `bgutil-ytdlp-pot-provider` **plugin**
+via pip (not the standalone binary) so the plugin is auto-discovered. The
+`[default]` group is what pulls `yt-dlp-ejs` (version-pinned to yt-dlp) plus the
+requests/urllib3/websockets HTTP stack — bare `pip install yt-dlp` declares no
+dependencies at all.
+
+> Do **not** add `--remote-components ejs:github`. It is the alternative to the
+> bundled package, not a companion: with the package installed, the flag still
+> fetched the solver from GitHub (measured 9.08s cold vs 2.06s local). The
+> container has no volume, so every deploy starts from a cold cache.
 
 ### PO-token provider sidecar [server]
 ```bash
@@ -269,7 +278,7 @@ sudo dokku config:set music-bot YOUTUBE_COOKIES="$(cat ~/cookies.txt)" && rm ~/c
 sudo dokku enter music-bot web /opt/ytdlp/bin/yt-dlp \
   --cookies /tmp/yt-cookies.txt \
   --extractor-args 'youtubepot-bgutilhttp:base_url=http://bgutil-provider:4416' \
-  --remote-components ejs:github --skip-download --print title \
+  --skip-download --print title \
   'https://www.youtube.com/watch?v=<id>'
 ```
 Prints the title = the full chain works.

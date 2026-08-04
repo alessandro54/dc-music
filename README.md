@@ -16,7 +16,9 @@ The result: ~5% CPU instead of 50%. No quality loss. No added latency.
 ## Why music-bot?
 
 - **WebmOpus passthrough** — zero transcoding, lowest CPU of any self-hosted bot
-- **In-process search** — YouTube search + metadata via youtubei.js (Innertube), no subprocess
+- **Fast enqueue** — metadata sources race in parallel; `/play` answers in ~0.3–1s instead of waiting on yt-dlp
+- **One extraction per track** — the streaming yt-dlp reports its own duration, so nothing runs twice
+- **In-process search** — YouTube search via youtubei.js (Innertube), no subprocess
 - **yt-dlp streaming** — battle-tested, updated daily, handles everything YouTube throws at it
 - **Self-hosted** — your server, your data, no subscriptions, no rate limits
 - **SQLite out of the box** — no database to set up, works on day one
@@ -86,13 +88,14 @@ deno task dev      # local dev with auto-restart
 
 ## Deployment
 
-Push to `main` — GitHub Actions builds the Docker image and deploys to Fly.io. A Fly
-`release_command` re-registers slash commands on every deploy, so you only run
-`deno task deploy` manually for local dev.
+Push to `main` — GitHub Actions builds an arm64 image, pushes it to GHCR, and SSHes into
+the Dokku host to release it. Slash commands are registered with `deno task deploy`.
 
-**Required GitHub secret:** `FLY_API_TOKEN`  
-**Required Fly.io secrets:** `BOT_TOKEN`, `CLIENT_ID`, `GUILD_ID`  
-**Optional Fly.io secrets:** `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `OWNER_ID`, `YOUTUBE_COOKIES`
+**Required GitHub secret:** `DOKKU_SSH_KEY` (in the `production` environment)  
+**Required host config:** `BOT_TOKEN`, `CLIENT_ID`, `GUILD_ID`  
+**Optional host config:** `SPOTIFY_*`, `TURSO_*`, `OWNER_ID`, `YOUTUBE_COOKIES`, `SENTRY_DSN`
+
+Set them with `dokku config:set music-bot KEY=…`. Full runbook: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ---
 
@@ -149,11 +152,36 @@ If `DASHBOARD_TOKEN` is set, append `?token=<your_token>` to the URL. The token 
 | Runtime | Deno 2.x |
 | Bot | discord.js v14 |
 | Audio | @discordjs/voice · WebmOpus passthrough · ffmpeg for seeks |
-| Search/metadata | youtubei.js (Innertube), in-process |
-| Streaming | yt-dlp (bundled binary) |
-| Database | @db/sqlite (Deno-native) |
+| Search | youtubei.js (Innertube), in-process |
+| Metadata | raced: history row · Innertube · oEmbed → yt-dlp fallback |
+| Streaming | yt-dlp (pip, nightly channel) |
+| Database | @db/sqlite (Deno-native) or Turso (libsql) |
 | Build | No build step — Deno runs src/ directly |
-| CI/CD | GitHub Actions → Fly.io (Docker, gru region, 512MB + swap) |
+| CI/CD | GitHub Actions (arm64) → GHCR → Dokku |
+
+---
+
+## Performance
+
+`/play` used to wait on `yt-dlp --dump-json` just to read a title — ~4s before the embed
+appeared. Three changes removed that, measured on a 2-core arm64 VM:
+
+| | before | after |
+|---|---|---|
+| `/play` → embed | 0.8–1.7s | ~0.35s |
+| queued → audible | up to 6.9s | ~6ms |
+
+1. **Metadata sources race** instead of chaining. Each one misses often (history miss, Innertube
+   bot-gated, oEmbed 404 on unlisted), so a chain paid the sum of the misses; a race pays the
+   fastest source that answers.
+2. **The streaming extraction reports its own duration** via `--print-to-file`, so a playing track
+   never spawns a second yt-dlp. That duplicate was the 6.9s — two extractions of the same video
+   competing for two cores while the user waited for sound.
+3. **`(url, played_at)` index** — the history lookup in front of every `/play` was a full scan,
+   and on a remote database that's a network round-trip.
+
+Every stage logs its own timing (`resolved in Nms`, `metadata via <source> in Nms`, `spawn Nms`)
+so a regression shows up as a number rather than a hunch.
 
 ---
 
@@ -167,15 +195,20 @@ src/
   events/     discord event handlers
   services/   music/ (guildQueue, stream, spotify, resolver, playback), health
   views/      embed builders
-  lib/        guards, utils, db, embeds, constants, logger, server
+  lib/        guards, utils, db, embeds, constants, logger, server, sentry
 ```
 
-- **Search vs playback split:** `searchVideo`/`fetchVideoInfo` use Innertube (in-process);
-  `createStream` uses yt-dlp. Innertube can't reliably decipher stream URLs in Deno, so
-  yt-dlp stays for playback.
-- **Process hygiene:** each play spawns a yt-dlp child (~70MB). `destroyResource` reaps it
-  (SIGTERM → await exit → SIGKILL fallback) on skip/stop/idle. Skipping the reap leaks
-  memory and OOM-kills the bot on the 512MB VM.
+- **Search vs playback split:** `searchVideo` uses Innertube (in-process); `createStream` uses
+  yt-dlp. Innertube can't reliably decipher stream URLs in Deno, so yt-dlp stays for playback.
+- **Raced metadata:** `fetchVideoInfo` hits an in-memory cache, then races the song-history row,
+  Innertube, and YouTube's oEmbed endpoint, falling back to `yt-dlp --dump-json` only when all
+  three miss. Chaining them meant every play paid the sum of the misses.
+- **Duration for free:** the streaming yt-dlp writes `%(duration)s` to a sidecar file while stdout
+  stays pure audio, so a playing track never needs a second extraction. Until it lands, `duration`
+  is `null` — views render `—`.
+- **Process hygiene:** every spawn is registered and reaped through one path (SIGTERM → await exit
+  → SIGKILL fallback) on skip/stop/idle and on shutdown. One-shot metadata calls run under a hard
+  deadline — a hung extraction otherwise holds the interaction open and never exits to be reaped.
 
 ---
 
@@ -186,6 +219,7 @@ deno install --allow-scripts   # install deps
 deno task dev                  # run with auto-restart
 deno task start                # run without watch
 deno task deploy               # register slash commands
+deno task test                 # duration sidecar + spawn lifecycle
 ```
 
 ---

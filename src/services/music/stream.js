@@ -47,10 +47,17 @@ if (potBaseUrl) {
     log.info(`[stream] PO-token provider → ${potBaseUrl}`);
 }
 
-// YouTube signature / n-sig challenge solver. yt-dlp fetches the EJS solver
-// script from GitHub (cached after first use) and runs it via the bundled deno
-// runtime — without it YouTube returns only image formats, no audio.
-const EJS_ARGS = ["--remote-components", "ejs:github"];
+// YouTube signature / n-sig challenge solver (EJS), run via the deno already in
+// the image — without it YouTube returns only image formats, no audio.
+//
+// Empty on purpose. The solver now ships in the image as the `yt-dlp-ejs`
+// package (Dockerfile installs `yt-dlp[default]`), which yt-dlp picks up on its
+// own. `--remote-components ejs:github` is the *alternative* to that package,
+// not a companion to it: measured with the package installed, passing the flag
+// still fetched from GitHub and cost 9.08s on a cold cache versus 2.06s using
+// the local copy. Since the container has no volume, every deploy is a cold
+// cache — and a GitHub outage would mean no audio at all.
+const EJS_ARGS = [];
 
 // Force PO-token fetching, but let yt-dlp pick the client.
 // - No player_client pin: YouTube enabled the SABR-only streaming experiment

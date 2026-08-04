@@ -24,6 +24,7 @@ deploy/runbook in `docs/DEPLOY.md`.
 ## Commands
 - `deno task dev` — run with auto-restart (src/ directly)
 - `deno task deploy` — register slash commands with Discord API
+- `deno task test` — `tests/music/streamDuration.test.js` (duration sidecar + spawn lifecycle; stubs `Deno.Command`, no network). Names the file explicitly because the three older `tests/**` files are **stale** — `bun:test`, `child_process`, pre-`services/` import paths — and fail to load under Deno.
 
 ## .env / Dokku config Required Keys
 ```
@@ -93,17 +94,46 @@ DB is **Turso** (remote) — no volume. See `docs/DEPLOY.md` for the full setup,
 
 ## VM & Memory
 - VM: Oracle Cloud Ampere (arm64), **12GB RAM** — no memory pressure. The old 512MB Fly heap cap (`--max-old-space-size=160`) has been removed from the Dockerfile CMD.
-- **Process hygiene still matters.** Each play spawns yt-dlp (now pip, a python child). `GuildQueue._killStream` → `destroyResource` (`services/stream.js`) reaps it: closes the output stream (EOF), SIGTERM, awaits `.status`, SIGKILL fallback after 2s. Don't regress — leaked procs are sloppy even with headroom.
-- Playback is sequential — only one yt-dlp alive at a time.
+- **Process hygiene still matters.** Each play spawns yt-dlp (now pip, a python child). `GuildQueue._killStream` → `destroyResource` (`services/music/stream.js`) reaps it via the shared `reap()`: stops the duration poller, closes the output stream (EOF), SIGTERM, awaits `.status`, SIGKILL fallback after 2s. Don't regress — leaked procs are sloppy even with headroom.
+- Playback is sequential — only one yt-dlp alive at a time. **This is a performance constraint, not just tidiness:** 2 cores means a second concurrent extraction directly delays the audio the user is waiting on (measured: 6.9s). Anything that spawns yt-dlp off the critical path must stay clear of the streaming spawn.
 
 ## Audio Pipeline (`src/services/`)
-- `fetchVideoInfo` (`stream.js`) → **in-memory cache → `song_history` row → Innertube `getBasicInfo` → oEmbed → yt-dlp `--dump-json`**. Measured on the prod IP: Innertube metadata is `LOGIN_REQUIRED` for ~5 of 6 videos (60ms, no title), oEmbed answers in ~37ms, yt-dlp takes 3.7–5.0s. oEmbed carries no duration, so `resolver.js` kicks `backfillDuration` in the background and mutates the queued song once yt-dlp answers — `duration` is therefore `null` for a few seconds and every view must tolerate it.
+- `fetchVideoInfo` (`stream.js`) → in-memory cache, then **`song_history` row, Innertube `getBasicInfo`, and oEmbed raced concurrently** (`Promise.any`), falling back to yt-dlp `--dump-json` only when all three reject. They were chained before; each misses often enough on this IP (DB miss, Innertube `LOGIN_REQUIRED` for ~5 of 6 videos, oEmbed 404 on unlisted) that chaining made every play pay the **sum of the misses**. Raced, a play costs the fastest source that answers. Innertube is capped at 1.5s — it has no deadline of its own.
+- **Duration comes from the streaming extraction, not a second yt-dlp.** `createStream` takes an `onDuration` callback and passes `--print-to-file %(duration)s /tmp/yt-duration-<id>.txt`; stdout stays pure audio and a poller fills the song in place (~2.8s in, measured). The eager `backfillDuration` still exists for tracks queued *behind* others, but waits 2s + until 8s past the last streaming spawn, then re-checks — by then the sidecar has usually answered and it spawns nothing.
+- `duration` is therefore `null` for a few seconds on the URL path — **every view must tolerate it** (`song.duration ?? "—"`).
 - `searchVideos` → still Innertube.
 - `createStream` → **yt-dlp** subprocess streams webm/opus (`StreamType.WebmOpus`, no transcode). Seek path pipes through ffmpeg.
 - `fetchPlaylistItems` → yt-dlp `--flat-playlist --dump-json`.
-- **Every yt-dlp call** carries shared arg groups: `COOKIES_ARGS` (`YOUTUBE_COOKIES`), `POT_ARGS` (`YTDLP_POT_BASE_URL` → bgutil provider), `EJS_ARGS` (`--remote-components ejs:github`, nsig solver via deno), plus `--retries`/`--extractor-retries`.
+- **Every yt-dlp call** carries shared arg groups: `COOKIES_ARGS` (`YOUTUBE_COOKIES`), `POT_ARGS` (`YTDLP_POT_BASE_URL` → bgutil provider), `EJS_ARGS` (now **empty** — the nsig solver ships in the image as `yt-dlp-ejs` via `yt-dlp[default]`; see below), plus `--retries`/`--extractor-retries`. Metadata calls skip the streaming set and pin `player_client=ios;player_skip=js` + `--ignore-no-formats-error` (1.4–1.8s vs 3.8s) — they need a title and a duration, not a playable format URL.
+- **Every spawn goes through the registry in `stream.js`** — `track()` on spawn, `reap()` (SIGTERM → await `.status` → SIGKILL after 2s) to kill. One-shot calls (`_dumpJson`, `fetchPlaylistItems`) run via `runYtdlp()` under a hard deadline (20s metadata, 60s playlist); `Deno.Command#output()` can't be aborted, and an unbounded call held the `/play` interaction open until Discord expired it while the process sat there for the container's uptime. `shutdownStreams()` (wired to SIGTERM/SIGINT in `index.js`) reaps the lot on redeploy.
+- Note on zombies: `docker-init` **is** PID 1 and does reap orphans — tini's "not running as PID 1" warning at every boot is noise here, and the host shows none accumulating. The real risk is a proc that *hangs* rather than exits; nothing reaps that but us, hence the deadlines.
 - YouTube access on this IP needs **all three**: cookies (past `LOGIN_REQUIRED`) + PO token (GVS) + EJS (signature/nsig). Missing any → no audio. See `docs/DEPLOY.md`.
+- **EJS comes from the image, not from GitHub.** The Dockerfile installs `yt-dlp[default]`, whose dependency group pins `yt-dlp-ejs` to the exact version yt-dlp requires (bare `pip install yt-dlp` declares *no* dependencies at all). `--remote-components ejs:github` is the alternative to that package, not a companion — measured with the package installed, the flag still fetched from GitHub: **9.08s cold vs 2.06s** using the local copy. The container has no volume, so every deploy is a cold cache, and a GitHub outage would have meant no audio. Don't re-add the flag.
 - Playback is sequential — only one yt-dlp alive at a time. Albums/playlists are a metadata queue (`GuildQueue.songs`); Spotify tracks resolve to YouTube lazily in `_playNext`.
+
+## Enqueue Performance
+`/play` → embed is `resolveQuery`. Three log lines make it measurable — don't guess, read them:
+```
+resolved in Nms                     # /play → embed (commands/play/index.js)
+[stream] metadata via <src> in Nms  # which raced source won (db/innertube/oembed/yt-dlp)
+· 3:44 · by user · spawn Nms        # createStream → player.play (guildQueue.js)
+```
+Measured on prod (2-core Ampere):
+
+| | before (27aae5e) | after (a54016e) |
+|---|---|---|
+| `resolved in` | 830–1650ms | 355ms (search path) |
+| `spawn` | — | 38ms |
+| Enqueued → audible | up to **6870ms** | 6ms |
+
+The 6.9s gap was the killer and it was **after** the embed, not in enqueue: `backfillDuration`
+extracted the same video while the streaming yt-dlp was starting, on 2 cores. Both are gone now
+that the streaming extraction reports its own duration.
+
+Caveat on the "after" column: it's **one play, and it took the search path** (`searchVideo` →
+Innertube), which was already fast and didn't change. The raced sources and the duration sidecar
+are only exercised by a **YouTube URL never played before** — a repeat play hits the cache/DB.
+That path is not yet measured on prod.
 
 ## Database (`src/lib/db.js`)
 - Adapter pattern. `initDb` picks: **Turso** if `TURSO_DATABASE_URL` is set (or `DB_URL` starts with `libsql://`), else **SQLite** (`@db/sqlite`) from `DB_URL` (`sqlite:<path>`, default `./bot.db`). mysql adapter removed.
