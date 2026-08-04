@@ -35,8 +35,11 @@ class FakeCommand {
     }
     spawn() {
         const record = this.record;
-        const sidecarPath = record.args[record.args.indexOf("--print-to-file") + 2];
-        if (sidecarBody !== null && sidecarPath) {
+        const flag = record.args.indexOf("--print-to-file");
+        const sidecarPath = flag === -1 ? null : record.args[flag + 2];
+        // Guard the path: a miscomputed index once wrote a stray file into the
+        // repo root. Only ever write where the real code puts its sidecars.
+        if (sidecarBody !== null && sidecarPath?.startsWith("/tmp/")) {
             Deno.writeTextFileSync(sidecarPath, sidecarBody);
         }
         // A streaming yt-dlp runs until killed — status settles only on kill,
