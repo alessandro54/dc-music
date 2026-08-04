@@ -18,10 +18,15 @@ const SIDECAR = `/tmp/yt-duration-${VIDEO_ID}.txt`;
 const future = () => Math.floor(Date.now() / 1000) + 6 * 3600;
 const mediaUrl = (expire = future()) => `https://rr1---sn-test.googlevideo.com/videoplayback?expire=${expire}&id=abc`;
 
+const PREFETCH_SIDECAR = `/tmp/yt-prefetch-${VIDEO_ID}.txt`;
+
 const realCommand = Deno.Command;
 const realFetch = globalThis.fetch;
 let spawned = [];
 let ytdlpStdout = "";
+// What the spawned "yt-dlp" writes to its --print-to-file sidecar, mimicking a
+// real download run resolving a media URL. null = never writes one.
+let sidecarBody = null;
 
 class FakeCommand {
     constructor(cmd, opts) {
@@ -29,14 +34,26 @@ class FakeCommand {
         spawned.push(this.record);
     }
     spawn() {
+        const record = this.record;
+        const sidecarPath = record.args[record.args.indexOf("--print-to-file") + 2];
+        if (sidecarBody !== null && sidecarPath) {
+            Deno.writeTextFileSync(sidecarPath, sidecarBody);
+        }
+        // A streaming yt-dlp runs until killed — status settles only on kill,
+        // which is what lets reap() complete.
+        let settle;
+        const status = new Promise((r) => {
+            settle = r;
+        });
         return {
             stdout: new ReadableStream({ start: (c) => c.close() }),
             stdin: new WritableStream(),
             stderr: (async function* () {})(),
-            status: new Promise(() => {}), // a streaming yt-dlp lives for the whole track
+            status,
             output: () => Promise.resolve(this._payload()),
             kill(signal) {
-                this.record?.signals.push(signal);
+                record.signals.push(signal);
+                settle({ success: false, code: null, signal });
             },
         };
     }
@@ -51,6 +68,7 @@ class FakeCommand {
 function setup() {
     spawned = [];
     ytdlpStdout = "";
+    sidecarBody = null;
     _resetShutdownForTests();
     Deno.Command = FakeCommand;
 }
@@ -58,21 +76,32 @@ function setup() {
 function restore() {
     Deno.Command = realCommand;
     globalThis.fetch = realFetch;
-    try {
-        Deno.removeSync(SIDECAR);
-    } catch { /* nothing to clean */ }
+    for (const f of [SIDECAR, PREFETCH_SIDECAR]) {
+        try {
+            Deno.removeSync(f);
+        } catch { /* nothing to clean */ }
+    }
 }
+
+// Prefetch resolves a URL by running a real download and reading its sidecar —
+// `-g`/`--skip-download` produce URLs googlevideo answers with 403.
+const armPrefetch = (expire) => {
+    sidecarBody = `213\n${mediaUrl(expire)}\n`;
+};
 
 const usedYtdlp = () => spawned.length > 0;
 
 Deno.test("prefetch caches the resolved media URL", async () => {
     setup();
     try {
-        ytdlpStdout = `${mediaUrl()}\n`;
+        armPrefetch();
         assertEquals(await prefetchFormatUrl(URL_A), true);
         assertEquals(_formatUrlCacheForTests().size, 1);
-        // -g resolves the URL without downloading.
-        assert(spawned[0].args.includes("-g"), "prefetch must not download");
+        // Must be a real download run — that is the only kind that mints a
+        // media URL googlevideo will actually serve.
+        assert(!spawned[0].args.includes("-g"), "-g yields a URL that 403s");
+        assert(!spawned[0].args.includes("--skip-download"), "--skip-download yields a URL that 403s");
+        assert(spawned[0].args.includes("--print-to-file"));
     } finally {
         restore();
     }
@@ -81,7 +110,7 @@ Deno.test("prefetch caches the resolved media URL", async () => {
 Deno.test("prefetch is skipped when the URL is already cached", async () => {
     setup();
     try {
-        ytdlpStdout = `${mediaUrl()}\n`;
+        armPrefetch();
         await prefetchFormatUrl(URL_A);
         const after = spawned.length;
         assertEquals(await prefetchFormatUrl(URL_A), false);
@@ -94,7 +123,7 @@ Deno.test("prefetch is skipped when the URL is already cached", async () => {
 Deno.test("a URL without a parseable expiry is not cached", async () => {
     setup();
     try {
-        ytdlpStdout = "https://rr1---sn-test.googlevideo.com/videoplayback?id=abc\n";
+        sidecarBody = "213\nhttps://rr1---sn-test.googlevideo.com/videoplayback?id=abc\n";
         await prefetchFormatUrl(URL_A);
         assertEquals(_formatUrlCacheForTests().size, 0, "cached a URL with no expiry");
     } finally {
@@ -107,7 +136,7 @@ Deno.test("an already-expired URL is not served from cache", async () => {
     try {
         // Inside the safety margin — treated as expired even though `expire` is
         // still a few minutes out.
-        ytdlpStdout = `${mediaUrl(Math.floor(Date.now() / 1000) + 60)}\n`;
+        armPrefetch(Math.floor(Date.now() / 1000) + 60);
         await prefetchFormatUrl(URL_A);
         spawned = [];
         globalThis.fetch = () => {
@@ -123,7 +152,7 @@ Deno.test("an already-expired URL is not served from cache", async () => {
 Deno.test("a cached URL streams over HTTP with no yt-dlp", async () => {
     setup();
     try {
-        ytdlpStdout = `${mediaUrl()}\n`;
+        armPrefetch();
         await prefetchFormatUrl(URL_A);
         spawned = [];
 
@@ -148,7 +177,7 @@ Deno.test("a cached URL streams over HTTP with no yt-dlp", async () => {
 Deno.test("a cached URL that 403s falls back to yt-dlp and is evicted", async () => {
     setup();
     try {
-        ytdlpStdout = `${mediaUrl()}\n`;
+        armPrefetch();
         await prefetchFormatUrl(URL_A);
         spawned = [];
         globalThis.fetch = () => Promise.resolve(new Response("denied", { status: 403 }));
@@ -165,7 +194,7 @@ Deno.test("a cached URL that 403s falls back to yt-dlp and is evicted", async ()
 Deno.test("a cached URL that throws mid-connect falls back to yt-dlp", async () => {
     setup();
     try {
-        ytdlpStdout = `${mediaUrl()}\n`;
+        armPrefetch();
         await prefetchFormatUrl(URL_A);
         spawned = [];
         globalThis.fetch = () => Promise.reject(new Error("connection reset"));
@@ -182,7 +211,7 @@ Deno.test("a cached URL that throws mid-connect falls back to yt-dlp", async () 
 Deno.test("seeking ignores the cache — it needs yt-dlp's --download-sections", async () => {
     setup();
     try {
-        ytdlpStdout = `${mediaUrl()}\n`;
+        armPrefetch();
         await prefetchFormatUrl(URL_A);
         spawned = [];
         globalThis.fetch = () => {

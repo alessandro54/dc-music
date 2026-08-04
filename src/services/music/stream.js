@@ -476,23 +476,64 @@ async function _directStream(videoId, mediaUrl) {
 // Resolve a track's media URL ahead of time and cache it, so the play itself is
 // a plain GET. Used to warm the *next* queued track while the current one is
 // already streaming — see GuildQueue.
+// Measured on prod: a URL from `-g` or `--skip-download` is rejected by
+// googlevideo with 403, while the one a real download run resolves fetches
+// fine (200, no headers needed) — those paths skip minting the GVS PO token
+// that the media URL is bound to. So a prefetch has to be an actual download:
+// start one, take the URL from the sidecar the moment it appears, kill it.
+// Only a few hundred KB are pulled before the kill.
+const PREFETCH_TIMEOUT_MS = 30_000;
+const PREFETCH_POLL_MS = 250;
+
 export async function prefetchFormatUrl(url) {
     const videoId = extractVideoId(url);
     if (!videoId || cachedFormatUrl(videoId)) return false;
+
+    const sidecar = `/tmp/yt-prefetch-${videoId}.txt`;
     try {
-        const { code, stdout } = await runYtdlp([
-            "--no-playlist", "--quiet", "--no-warnings", "--no-check-formats", "-g",
-            "-f", AUDIO_FMT,
-            ...COOKIES_ARGS, ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
-            url,
-        ], { timeoutMs: METADATA_TIMEOUT_MS, what: "yt-dlp prefetch" });
-        const mediaUrl = dec.decode(stdout).trim().split("\n")[0];
-        if (code !== 0 || !mediaUrl.startsWith("http")) return false;
-        cacheFormatUrl(videoId, mediaUrl);
-        return true;
+        Deno.removeSync(sidecar);
+    } catch { /* no leftover */ }
+
+    // stdout is discarded: this run exists only to resolve a usable URL.
+    const proc = track(
+        new Deno.Command(YTDLP, {
+            args: [
+                "--no-playlist", "-o", "-", "--quiet", "--no-warnings", "--no-check-formats",
+                "--socket-timeout", "15",
+                ...COOKIES_ARGS, ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
+                "-f", AUDIO_FMT,
+                "--print-to-file", "%(duration)s\n%(urls)s", sidecar,
+                url,
+            ],
+            stdout: "null",
+            stderr: "null",
+        }).spawn(),
+    );
+
+    const deadline = Date.now() + PREFETCH_TIMEOUT_MS;
+    try {
+        while (Date.now() < deadline) {
+            if (_shutdownAC.signal.aborted) return false;
+            let lines;
+            try {
+                lines = (await Deno.readTextFile(sidecar)).trim().split("\n");
+            } catch {
+                await sleep(PREFETCH_POLL_MS, _shutdownAC.signal).catch(() => {});
+                continue;
+            }
+            const mediaUrl = lines[1];
+            if (!mediaUrl?.startsWith("http")) return false;
+            cacheFormatUrl(videoId, mediaUrl);
+            return cachedFormatUrl(videoId) !== null;
+        }
+        return false;
     } catch (err) {
         log.warn(`[stream] prefetch failed for ${url}: ${err.message}`);
         return false;
+    } finally {
+        // Always stop the download — it only ever existed for the URL.
+        await reap(proc);
+        Deno.remove(sidecar).catch(() => {});
     }
 }
 
