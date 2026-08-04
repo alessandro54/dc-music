@@ -3,27 +3,39 @@
 FROM denoland/deno:debian
 WORKDIR /app
 
-# Changing CACHEBUST (weekly scheduled builds pass github.run_id) invalidates
-# the layer below so pip re-pulls the latest yt-dlp — keeps YouTube extraction
-# working without manual intervention.
-ARG CACHEBUST=
-
-# yt-dlp via pip (not the standalone binary) so the bgutil PO-token provider
-# plugin is auto-discovered — lets us bypass YouTube bot detection on datacenter
-# IPs without cookies. Installed in a venv (Debian is PEP 668 externally-managed).
+# Stable layer — system packages + pokemon-colorscripts. Nothing here tracks
+# YouTube, so it must stay above ARG CACHEBUST: putting the arg first made the
+# weekly yt-dlp refresh reinstall ffmpeg/python and re-clone the sprites too
+# (measured on arm64: 30.6s of needless work per scheduled build).
+# git is only needed for the clone, so it's purged in the same layer (-120MB).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg curl ca-certificates git python3 python3-venv \
-    && python3 -m venv /opt/ytdlp \
-    && /opt/ytdlp/bin/pip install --no-cache-dir -U yt-dlp "bgutil-ytdlp-pot-provider==1.3.1" \
-    && ln -s /opt/ytdlp/bin/yt-dlp /usr/local/bin/yt-dlp \
     && git clone --depth 1 https://gitlab.com/phoneybadger/pokemon-colorscripts.git /tmp/pokemon-colorscripts \
     && (cd /tmp/pokemon-colorscripts && sh install.sh) \
     && rm -rf /tmp/pokemon-colorscripts \
+    && apt-get purge -y --auto-remove git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY deno.json deno.lock ./
 RUN deno install --allow-scripts \
     && deno eval "import '@db/sqlite'" 2>/dev/null || true
+
+# Volatile layer, deliberately last before the source copy — changing CACHEBUST
+# (weekly scheduled builds pass github.run_id) invalidates this and nothing
+# else, so a yt-dlp refresh costs ~2.2s instead of rebuilding deno deps too.
+ARG CACHEBUST=
+
+# yt-dlp via pip (not the standalone binary) so the bgutil PO-token provider
+# plugin is auto-discovered — lets us bypass YouTube bot detection on datacenter
+# IPs without cookies. Installed in a venv (Debian is PEP 668 externally-managed).
+#
+# --pre installs the nightly channel (PyPI .dev0 prereleases). YouTube extractor
+# fixes land in nightly first and stable can trail it by weeks — on 2026-08-04
+# stable was 2026.07.04 while nightly was 2026.07.23. bgutil stays on its pin,
+# so --pre only affects yt-dlp.
+RUN python3 -m venv /opt/ytdlp \
+    && /opt/ytdlp/bin/pip install --no-cache-dir -U --pre yt-dlp "bgutil-ytdlp-pot-provider==1.3.1" \
+    && ln -s /opt/ytdlp/bin/yt-dlp /usr/local/bin/yt-dlp
 
 COPY src/ ./src/
 
