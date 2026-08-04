@@ -11,6 +11,7 @@ import { log } from "./lib/logger.js";
 import { captureError } from "./lib/sentry.js";
 import { startServer } from "./lib/server.js";
 import { queues, setClient } from "./services/music/guildQueue.js";
+import { shutdownStreams } from "./services/music/stream.js";
 
 process.on("unhandledRejection", (err) => {
     log.error(`unhandledRejection: ${err}`);
@@ -71,3 +72,24 @@ const port = Deno.env.get("SERVER_PORT") || Deno.env.get("PORT") || 3000;
 startServer(port, queues, client);
 
 client.login(Deno.env.get("BOT_TOKEN"));
+
+// Dokku sends SIGTERM on every redeploy. Container teardown would kill the
+// whole cgroup anyway, so this isn't about leaked processes — it's about going
+// down cleanly: leave the voice channels, stop the players, reap our own yt-dlp
+// children rather than having them die mid-write.
+let shuttingDown = false;
+for (const signal of ["SIGTERM", "SIGINT"]) {
+    Deno.addSignalListener(signal, async () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        log.info(`${signal} — shutting down`);
+        try {
+            for (const queue of [...queues.values()]) queue.destroy();
+            await shutdownStreams();
+            await client.destroy();
+        } catch (err) {
+            log.error(`shutdown: ${err.message}`);
+        }
+        Deno.exit(0);
+    });
+}

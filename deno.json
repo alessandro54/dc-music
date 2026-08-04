@@ -16,6 +16,7 @@
     "start": "deno run --allow-all --env-file=.env src/index.js",
     "dev": "deno run --allow-all --env-file=.env --watch src/index.js",
     "deploy": "deno run --allow-all --env-file=.env src/deployCommands.js",
-    "spotify-auth": "deno run --allow-net --allow-env --env-file=.env scripts/spotify-auth.js"
+    "spotify-auth": "deno run --allow-net --allow-env --env-file=.env scripts/spotify-auth.js",
+    "test": "deno test --allow-all tests/music/streamDuration.test.js"
   }
 }

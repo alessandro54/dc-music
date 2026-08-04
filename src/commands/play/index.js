@@ -27,8 +27,10 @@ export default {
         await interaction.reply({ content: `🔍 Searching for **${query}**…` });
 
         let resolved;
+        const started = performance.now();
         try {
             resolved = await resolveQuery(query, interaction.user.tag, interaction.user.id);
+            log.music(log.gray(`resolved in ${Math.round(performance.now() - started)}ms`));
         } catch (err) {
             log.error(`[play] resolve: ${err.message}`);
             captureError(err, {

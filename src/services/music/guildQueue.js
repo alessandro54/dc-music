@@ -169,13 +169,20 @@ export class GuildQueue {
         }
 
         try {
-            const resource = await createStream(song.url, this.seekOffset);
+            const started = performance.now();
+            // The streaming extraction reports the duration for free — no second
+            // yt-dlp needed for the track that's actually playing.
+            const resource = await createStream(song.url, this.seekOffset, (duration) => {
+                song.duration ??= duration;
+            });
             this.resource = resource;
             this.player.play(resource);
             this.playing = true;
             updateActivity();
             log.music(
-                `${log.bold(song.title)} ${log.gray(`· ${song.duration} · by ${song.requestedBy}`)}`,
+                `${log.bold(song.title)} ${
+                    log.gray(`· ${song.duration ?? "—"} · by ${song.requestedBy} · spawn ${Math.round(performance.now() - started)}ms`)
+                }`,
             );
             saveSong({
                 guildId: this.guildId,

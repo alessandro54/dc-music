@@ -68,6 +68,90 @@ const CLIENT_ARGS = ["--extractor-args", "youtube:fetch_pot=always"];
 const AUDIO_FMT = "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=opus]/bestaudio";
 const dec = new TextDecoder();
 
+// ── child process lifecycle ────────────────────────────────────────────────
+// Every yt-dlp/ffmpeg this module spawns is registered here. docker-init at PID 1
+// does reap orphans (despite tini's warning at boot), but only once they exit —
+// a proc that hangs instead of exiting is nobody's problem but ours, and it sits
+// there for the container's whole uptime.
+const liveProcs = new Set();
+
+// Cancels in-flight waits (backfill delays) at shutdown so nothing spawns on
+// the way out.
+let _shutdownAC = new AbortController();
+
+function track(proc) {
+    liveProcs.add(proc);
+    proc.status.finally(() => liveProcs.delete(proc)).catch(() => liveProcs.delete(proc));
+    return proc;
+}
+
+// SIGTERM, then SIGKILL if it's still there. Awaiting .status is what actually
+// reaps the child and releases its stdio pipes.
+async function reap(proc, graceMs = 2000) {
+    try {
+        proc.kill("SIGTERM");
+    } catch { /* already exited */ }
+    const exited = await Promise.race([
+        proc.status.then(() => true).catch(() => true),
+        new Promise((r) => setTimeout(() => r(false), graceMs)),
+    ]);
+    if (exited) return;
+    try {
+        proc.kill("SIGKILL");
+    } catch { /* race: exited between checks */ }
+    await proc.status.catch(() => {});
+}
+
+const sleep = (ms, signal) =>
+    new Promise((resolve, reject) => {
+        if (signal?.aborted) return reject(new Error("aborted"));
+        const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+        }, ms);
+        function onAbort() {
+            clearTimeout(timer);
+            reject(new Error("aborted"));
+        }
+        signal?.addEventListener("abort", onAbort, { once: true });
+    });
+
+// Run a one-shot yt-dlp (metadata / playlist dump) under a hard deadline.
+// Deno.Command#output() can't be aborted, so the proc is spawned and raced —
+// on timeout it gets killed and reaped rather than left running with a pipe
+// nobody reads.
+async function runYtdlp(args, { timeoutMs, what }) {
+    const proc = track(new Deno.Command(YTDLP, { args, stdout: "piped", stderr: "piped" }).spawn());
+    let timer;
+    const deadline = new Promise((_, rej) => {
+        timer = setTimeout(() => rej(new Error(`${what} timed out after ${timeoutMs}ms`)), timeoutMs);
+    });
+    try {
+        return await Promise.race([proc.output(), deadline]);
+    } catch (err) {
+        await reap(proc);
+        throw err;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+// Kill everything this module owns. Called from the shutdown path so a redeploy
+// doesn't leave yt-dlp children behind.
+export async function shutdownStreams() {
+    _shutdownAC.abort();
+    const procs = [...liveProcs];
+    liveProcs.clear();
+    if (procs.length) log.info(`[stream] reaping ${procs.length} child process(es)`);
+    await Promise.all(procs.map((p) => reap(p, 1000)));
+}
+
+// Tests re-arm the module between cases; production never calls this.
+export function _resetShutdownForTests() {
+    _shutdownAC = new AbortController();
+    liveProcs.clear();
+}
+
 let _yt = null;
 async function getInnertube() {
     if (_yt) return _yt;
@@ -115,6 +199,41 @@ async function _oembedVideoInfo(url, videoId) {
     return { title: j.title, url, duration: null, thumbnail: j.thumbnail_url ?? ytThumb(videoId) };
 }
 
+// Anything played before already has its title and duration stored.
+async function _dbVideoInfo(url, videoId) {
+    const known = await getSongMeta(url);
+    if (!known?.title) throw new Error("not in history");
+    return { title: known.title, url, duration: known.duration ?? null, thumbnail: ytThumb(videoId) };
+}
+
+// In-process Innertube — when it isn't bot-gated it returns title and duration
+// together in ~60ms. On this IP most videos come back LOGIN_REQUIRED with no
+// title, so it's a lucky fast path, not the primary one. It has no built-in
+// deadline, so cap it: a hung session must not hold up the sources that answer.
+async function _innertubeVideoInfo(url, videoId) {
+    const info = await withTimeout(
+        getInnertube().then((yt) => yt.getBasicInfo(videoId)),
+        INNERTUBE_TIMEOUT_MS,
+        "innertube",
+    );
+    const title = info.basic_info?.title;
+    if (!title) throw new Error("innertube returned no title");
+    const duration = info.basic_info?.duration;
+    return { title, url, duration: duration ? fmtSecs(duration) : null, thumbnail: ytThumb(videoId) };
+}
+
+const INNERTUBE_TIMEOUT_MS = 1500;
+
+function withTimeout(promise, ms, label) {
+    let timer;
+    return Promise.race([
+        promise.finally(() => clearTimeout(timer)),
+        new Promise((_, rej) => {
+            timer = setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms);
+        }),
+    ]);
+}
+
 export async function fetchVideoInfo(url) {
     const videoId = extractVideoId(url);
     if (!videoId) throw new Error("invalid YouTube URL");
@@ -122,61 +241,87 @@ export async function fetchVideoInfo(url) {
     const cached = metaCache.get(videoId);
     if (cached) return cached;
 
-    // Anything played before already has its title and duration in the DB.
-    const known = await getSongMeta(url);
-    if (known?.title) {
-        return cacheMeta(videoId, {
-            title: known.title,
-            url,
-            duration: known.duration ?? null,
-            thumbnail: ytThumb(videoId),
-        });
-    }
-
-    // In-process Innertube first — when it isn't bot-gated it returns title and
-    // duration together in ~60ms. On this IP most videos come back
-    // LOGIN_REQUIRED with no title, so treat it as a lucky fast path, not the
-    // primary one.
+    // The three cheap sources run concurrently rather than in a chain: each one
+    // fails often enough on this IP (DB miss, Innertube LOGIN_REQUIRED, oEmbed
+    // 404 on unlisted) that chaining them makes every play pay the sum of the
+    // misses. Raced, a play costs the *fastest* source that answers.
+    const started = performance.now();
+    let won = false;
+    const sources = [
+        ["db", _dbVideoInfo(url, videoId)],
+        ["innertube", _innertubeVideoInfo(url, videoId)],
+        ["oembed", _oembedVideoInfo(url, videoId)],
+    ];
     try {
-        const yt = await getInnertube();
-        const info = await yt.getBasicInfo(videoId);
-        const title = info.basic_info?.title;
-        const duration = info.basic_info?.duration;
-        if (title) {
-            return cacheMeta(videoId, {
-                title,
-                url,
-                duration: duration ? fmtSecs(duration) : null,
-                thumbnail: ytThumb(videoId),
-            });
-        }
+        const info = await Promise.any(sources.map(([name, p]) =>
+            p.then((r) => {
+                // Losers still settle — only the first one to answer is the cost.
+                if (!won) log.info(`[stream] metadata via ${name} in ${Math.round(performance.now() - started)}ms`);
+                won = true;
+                return r;
+            })
+        ));
+        return cacheMeta(videoId, info);
     } catch (err) {
-        log.warn(`[stream] Innertube getBasicInfo failed: ${err.message}`);
-    }
-
-    try {
-        return cacheMeta(videoId, await _oembedVideoInfo(url, videoId));
-    } catch (err) {
-        log.warn(`[stream] oEmbed failed, falling back to yt-dlp: ${err.message}`);
+        // AggregateError — every fast source missed.
+        const reasons = err.errors?.map((e, i) => `${sources[i][0]}: ${e.message}`).join("; ") ?? err.message;
+        log.warn(`[stream] fast metadata sources failed (${reasons}), falling back to yt-dlp`);
     }
 
     // Private/unlisted/region-locked — only the cookie-aware extractor can see it.
-    return cacheMeta(videoId, await _ytdlpVideoInfo(url, videoId));
+    const info = await _ytdlpVideoInfo(url, videoId);
+    log.info(`[stream] metadata via yt-dlp in ${Math.round(performance.now() - started)}ms`);
+    return cacheMeta(videoId, info);
 }
+
+// Backfill spawns yt-dlp, which on this box is the single most expensive thing
+// the bot does. Playback spawns its own yt-dlp moments later — measured on the
+// 2-core host, a backfill running across a streaming spawn delayed audio by 6.9s
+// (15:09 in the prod log: 0.9s to enqueue, then 6.9s of nothing). So backfills
+// are serialised with each other and kept clear of the streaming spawn.
+//
+// The minimum delay is what makes the grace window work: backfill is kicked from
+// the resolver, *before* the track is enqueued and the stream spawns, so without
+// it the grace check reads a stale timestamp and runs straight into the spawn.
+const BACKFILL_MIN_DELAY_MS = 2000;
+const BACKFILL_STREAM_GRACE_MS = 8000;
+let _lastStreamSpawn = 0;
+let _backfillChain = Promise.resolve();
 
 // Fill in a duration the fast paths couldn't provide, off the critical path.
 // Mutates the queued song in place so /np and /queue pick it up on next render.
-export async function backfillDuration(song) {
+export function backfillDuration(song) {
     const videoId = extractVideoId(song.url);
-    if (!videoId || song.duration) return;
-    try {
-        const info = await _ytdlpVideoInfo(song.url, videoId);
-        song.duration = info.duration;
-        const cached = metaCache.get(videoId);
-        if (cached) cached.duration = info.duration;
-    } catch (err) {
-        log.warn(`[stream] duration backfill failed for ${song.url}: ${err.message}`);
-    }
+    if (!videoId || song.duration) return _backfillChain;
+
+    _backfillChain = _backfillChain.then(async () => {
+        // Waits are abortable: a shutdown mid-delay must not spawn yt-dlp on
+        // the way out, and the sleep must not hold the process open either.
+        const signal = _shutdownAC.signal;
+        try {
+            await sleep(BACKFILL_MIN_DELAY_MS, signal);
+            const wait = _lastStreamSpawn + BACKFILL_STREAM_GRACE_MS - Date.now();
+            if (wait > 0) await sleep(wait, signal);
+        } catch {
+            return; // shutting down
+        }
+        // Re-check only now: the whole point of waiting is that something
+        // cheaper usually answers first — the playing track's own extraction
+        // prints its duration, or an earlier backfill in this chain filled it.
+        if (song.duration || signal.aborted) return;
+        try {
+            // Single attempt: the full-args retry costs another ~3.8s of yt-dlp
+            // for a number that only decorates an embed. If the cheap client
+            // can't see the video, leave the duration blank.
+            const info = await _dumpJson(song.url, videoId, META_ARGS);
+            song.duration = info.duration;
+            const cached = metaCache.get(videoId);
+            if (cached) cached.duration = info.duration;
+        } catch (err) {
+            log.warn(`[stream] duration backfill failed for ${song.url}: ${err.message}`);
+        }
+    });
+    return _backfillChain;
 }
 
 // Metadata needs a title and a duration — not a playable format URL. Pinning a
@@ -201,16 +346,17 @@ async function _ytdlpVideoInfo(url, videoId) {
     }
 }
 
+// A metadata call that hasn't answered in this long is never going to — and an
+// unbounded one holds the /play interaction open until Discord expires it.
+const METADATA_TIMEOUT_MS = 20_000;
+const PLAYLIST_TIMEOUT_MS = 60_000;
+
 async function _dumpJson(url, videoId, extraArgs) {
-    const { code, stdout, stderr } = await new Deno.Command(YTDLP, {
-        args: [
-            "--no-playlist", "--dump-json", "--quiet", "--no-warnings", "--skip-download",
-            ...COOKIES_ARGS, ...CACHE_ARGS, ...extraArgs,
-            url,
-        ],
-        stdout: "piped",
-        stderr: "piped",
-    }).output();
+    const { code, stdout, stderr } = await runYtdlp([
+        "--no-playlist", "--dump-json", "--quiet", "--no-warnings", "--skip-download",
+        ...COOKIES_ARGS, ...CACHE_ARGS, ...extraArgs,
+        url,
+    ], { timeoutMs: METADATA_TIMEOUT_MS, what: "yt-dlp metadata" });
     const out = dec.decode(stdout).trim();
     if (code !== 0 || !out) throw new Error(`incomplete video info: ${dec.decode(stderr).trim() || "yt-dlp returned nothing"}`);
     const v = JSON.parse(out.split("\n")[0]);
@@ -236,15 +382,11 @@ export async function searchVideo(query) {
 }
 
 export async function fetchPlaylistItems(url, limit) {
-    const { code, stdout, stderr } = await new Deno.Command(YTDLP, {
-        args: [
-            "--flat-playlist", "--dump-json", "--quiet", "--no-warnings", ...COOKIES_ARGS, ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS,
-            "--playlist-end", String(limit),
-            url,
-        ],
-        stdout: "piped",
-        stderr: "piped",
-    }).output();
+    const { code, stdout, stderr } = await runYtdlp([
+        "--flat-playlist", "--dump-json", "--quiet", "--no-warnings", ...COOKIES_ARGS, ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS,
+        "--playlist-end", String(limit),
+        url,
+    ], { timeoutMs: PLAYLIST_TIMEOUT_MS, what: "yt-dlp playlist" });
     const out = dec.decode(stdout);
     if (code !== 0 && !out.trim()) throw new Error(`yt-dlp playlist failed (${code}): ${dec.decode(stderr).trim()}`);
     return out.trim().split("\n").filter(Boolean).map((line) => {
@@ -260,8 +402,54 @@ export async function fetchPlaylistItems(url, limit) {
     }).filter(Boolean);
 }
 
-export async function createStream(url, seekSeconds = 0) {
-    return _ytdlpStream(url, seekSeconds);
+export async function createStream(url, seekSeconds = 0, onDuration = null) {
+    return _ytdlpStream(url, seekSeconds, onDuration);
+}
+
+// The streaming extraction already parses the duration — `--print-to-file` drops
+// it in a sidecar file (stdout stays pure audio) so the playing track needs no
+// second yt-dlp at all. Poll the file rather than reading it once: the extractor
+// writes it a second or two after spawn, well before the track has buffered.
+const DURATION_POLL_MS = 400;
+const DURATION_POLL_TRIES = 40;
+
+// Returns a stop handle. The poller must not outlive the extraction that feeds
+// it: a skipped track's file would otherwise be read seconds later and its
+// duration written into a song that has already left the queue.
+function _watchDurationFile(path, videoId, onDuration) {
+    let tries = 0;
+    let stopped = false;
+
+    const timer = setInterval(() => void tick(), DURATION_POLL_MS);
+
+    async function tick() {
+        if (stopped) return;
+        if (++tries > DURATION_POLL_TRIES) return stop();
+        let raw;
+        try {
+            raw = (await Deno.readTextFile(path)).trim().split("\n")[0];
+        } catch {
+            return; // not written yet
+        }
+        stop();
+        const secs = Number(raw);
+        if (!Number.isFinite(secs) || secs <= 0) return;
+        const duration = fmtSecs(secs);
+        const cached = metaCache.get(videoId);
+        if (cached) cached.duration = duration;
+        onDuration(duration);
+    }
+
+    function stop() {
+        if (stopped) return;
+        stopped = true;
+        clearInterval(timer);
+        Deno.remove(path).catch(() => {});
+    }
+
+    // One last look when yt-dlp exits — it may have written the file between
+    // ticks — then the poller is done either way.
+    return { stop, settle: async () => { await tick(); stop(); } };
 }
 
 // Tear down a resource and reap its child procs. SIGTERM first so yt-dlp can
@@ -270,31 +458,30 @@ export async function createStream(url, seekSeconds = 0) {
 // releases its stdio pipes — without this, killed procs leak as zombies.
 export async function destroyResource(resource) {
     if (!resource) return;
+    // Stop the duration poller before the procs die — a skipped track must not
+    // keep reading a file to update a song that is no longer queued.
+    try {
+        resource._cleanup?.();
+    } catch { /* nothing to stop */ }
     // Close the output stream so child stdout pipes receive EOF.
     try {
         resource.playStream?.destroy();
     } catch { /* already gone */ }
 
-    await Promise.all((resource._procs ?? []).map(async (proc) => {
-        try {
-            proc.kill("SIGTERM");
-        } catch { /* already exited */ }
-        const exited = await Promise.race([
-            proc.status.then(() => true).catch(() => true),
-            new Promise((r) => setTimeout(() => r(false), 2000)),
-        ]);
-        if (!exited) {
-            try {
-                proc.kill("SIGKILL");
-            } catch { /* race: exited between checks */ }
-            try {
-                await proc.status;
-            } catch { /* already reaped */ }
-        }
-    }));
+    await Promise.all((resource._procs ?? []).map((proc) => reap(proc)));
 }
 
-function _ytdlpStream(url, seekSeconds) {
+function _ytdlpStream(url, seekSeconds, onDuration = null) {
+    const videoId = extractVideoId(url);
+    let durationFile = null;
+    if (onDuration && videoId) {
+        // --print-to-file appends, so start from a clean file.
+        durationFile = `/tmp/yt-duration-${videoId}.txt`;
+        try {
+            Deno.removeSync(durationFile);
+        } catch { /* no leftover */ }
+    }
+
     const args = [
         "--no-playlist", "-o", "-", "--quiet", "--no-warnings", "--no-check-formats",
         // Transient googlevideo 403s: retry the download and re-run the
@@ -315,9 +502,21 @@ function _ytdlpStream(url, seekSeconds) {
         args.push("-f", AUDIO_FMT);
     }
 
+    if (durationFile) args.push("--print-to-file", "%(duration)s", durationFile);
+
     args.push(url);
 
-    const ytdlp = new Deno.Command(YTDLP, { args, stdout: "piped", stderr: "piped" }).spawn();
+    const ytdlp = track(new Deno.Command(YTDLP, { args, stdout: "piped", stderr: "piped" }).spawn());
+    // Let a queued duration backfill know a streaming extraction just started,
+    // so it doesn't compete with it for CPU while the user waits for audio.
+    _lastStreamSpawn = Date.now();
+
+    let durationWatch = null;
+    if (durationFile) {
+        durationWatch = _watchDurationFile(durationFile, videoId, onDuration);
+        // Bound the poller by the extraction itself, not just by its own tries.
+        ytdlp.status.then(() => durationWatch.settle()).catch(() => durationWatch.stop());
+    }
     // The stream is handed back before yt-dlp has produced a byte, so a failed
     // extraction never throws here — it surfaces as a silent track (the stall
     // watchdog skips it). Drain stderr and report a non-zero exit so the actual
@@ -352,13 +551,16 @@ function _ytdlpStream(url, seekSeconds) {
             stdout: "piped",
             stderr: "null",
         }).spawn();
+        track(ffmpeg);
         ytdlp.stdout.pipeTo(ffmpeg.stdin).catch(() => {});
         const resource = createAudioResource(Readable.fromWeb(ffmpeg.stdout), { inputType: StreamType.Arbitrary });
         resource._procs = [ytdlp, ffmpeg];
+        resource._cleanup = () => durationWatch?.stop();
         return resource;
     }
 
     const resource = createAudioResource(Readable.fromWeb(ytdlp.stdout), { inputType: StreamType.WebmOpus });
     resource._procs = [ytdlp];
+    resource._cleanup = () => durationWatch?.stop();
     return resource;
 }

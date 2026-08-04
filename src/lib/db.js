@@ -18,6 +18,10 @@ async function initSqlite(path) {
     )`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_guild ON song_history (guild_id)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_user ON song_history (user_id)`);
+    // getSongMeta and the save dedup both look a url up by newest play — without
+    // this they scan the whole log, and on Turso that scan is a network round-trip
+    // sitting in front of every /play.
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_url_played ON song_history (url, played_at DESC)`);
     const insert = db.prepare(
         "INSERT INTO song_history (guild_id, user_id, user_tag, title, url, duration) VALUES (?, ?, ?, ?, ?, ?)",
     );
@@ -72,6 +76,10 @@ async function initTurso(url, authToken) {
         )`,
         `CREATE INDEX IF NOT EXISTS idx_guild ON song_history (guild_id)`,
         `CREATE INDEX IF NOT EXISTS idx_user ON song_history (user_id)`,
+        // getSongMeta and the save dedup both look a url up by newest play — without
+        // this they scan the whole log, and here that scan is a network round-trip
+        // sitting in front of every /play.
+        `CREATE INDEX IF NOT EXISTS idx_url_played ON song_history (url, played_at DESC)`,
     ], "write");
     log.db(`Turso ready — ${url}`);
 
