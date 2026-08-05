@@ -8,7 +8,7 @@
 //   dokku enter music-bot web deno run --allow-all /tmp/e2e.js
 //
 // Exits non-zero on failure so it can gate a release.
-import { createStream, destroyResource } from "../../src/services/music/stream.js";
+import { createStream, destroyResource } from "@/discord/services/streamService.js";
 
 const VIDEO = Deno.args[0] ?? "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 const WANT_BYTES = 65536;

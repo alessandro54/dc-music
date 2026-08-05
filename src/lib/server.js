@@ -1,8 +1,8 @@
-import CONFIG_HTML from "./config.html" with { type: "text" };
-import { getConfig, setConfig } from "./config.js";
-import HTML from "./dashboard.html" with { type: "text" };
-import { log } from "./logger.js";
-import { captureError } from "./sentry.js";
+import CONFIG_HTML from "@/lib/config.html" with { type: "text" };
+import { getConfig, setConfig } from "@/lib/config.js";
+import HTML from "@/lib/dashboard.html" with { type: "text" };
+import { log } from "@/lib/logger.js";
+import { captureError } from "@/lib/sentry.js";
 
 function checkAuth(req, url) {
     const token = Deno.env.get("DASHBOARD_TOKEN");
@@ -107,7 +107,9 @@ export function startServer(port, queues, client) {
                     }, 2000);
                     req.signal.addEventListener("abort", () => {
                         clearInterval(interval);
-                        try { controller.close(); } catch {}
+                        try {
+                            controller.close();
+                        } catch { /* already closed */ }
                     });
                 },
             });

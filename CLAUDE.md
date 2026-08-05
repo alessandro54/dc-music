@@ -14,7 +14,7 @@ deploy/runbook in `docs/DEPLOY.md`.
 - youtubei.js (Innertube) — fast-path YouTube search + metadata (falls back to yt-dlp)
 - yt-dlp (pip-installed in image, **nightly channel** via `--pre`) — audio streaming + playlist dump + metadata fallback
 - bgutil PO-token provider (Docker sidecar) + EJS solver — YouTube bot-detection / nsig bypass
-- ffmpeg — transcode on seek only
+- ffmpeg — transcode on seek, and for any non-YouTube source (SoundCloud is m4a/AAC over HLS)
 
 ## Bot Info
 - App ID: 1513765585794895872
@@ -24,6 +24,7 @@ deploy/runbook in `docs/DEPLOY.md`.
 ## Commands
 - `deno task dev` — run with auto-restart (src/ directly)
 - `deno task deploy` — register slash commands with Discord API
+- `deno task fmt` / `deno task lint` / `deno task check` — **`deno fmt` + `deno lint`, no Biome.** Biome was config-only (nothing installed it, no CI step, no task), so it was deleted; the `biome-ignore` pragma in `spriteImageService.js` became a `deno-lint-ignore`. `fmt` is scoped to `src/`, `tests/`, `scripts/`, `drizzle.config.js` with `indentWidth: 4` / `lineWidth: 110` to match the existing style — **Markdown and YAML are deliberately out of scope** (`deno fmt` prose-reflows `.md`, which was 879 diff lines across the docs). `src/db/migrations/` and the dashboard HTML are excluded too. `require-await` is off: `async execute` is the handler contract (the dispatcher awaits every one), so the rule flags convention, not bugs.
 - `deno task test` — `tests/music/` (duration sidecar, spawn lifecycle, fast-path fallback). Stubs `Deno.Command`, no network. The three stale `bun:test` files were deleted; they had not been runnable since the `services/` move.
 - `tests/e2e/stream.e2e.js` — real yt-dlp against real YouTube, so it only means anything **inside the deployed container**: `docker cp` it in, then `dokku enter music-bot web deno run --allow-all …`. It pulls 1.5MB deliberately: reading only the first 64KB is what let a truncated-stream bug ship.
 
@@ -52,38 +53,156 @@ Container topology + sidecar rationale with measurements: `docs/ARCHITECTURE.md`
 Standalone/reproducible stack: `docker-compose.yml`.
 
 Layered. Commands are thin controllers; logic lives in services; rendering in views.
+Three top-level dirs, each with a rule for what belongs in it:
 
 ```
 src/
-  commands/  slash-command handlers — parse interaction → call service → render view → reply
-  events/    discord event handlers
-  services/  domain + infra: guildQueue (playback engine + queues Map), stream (yt-dlp/Innertube),
-             spotify, resolver (query → songs), playback (getOrCreateQueue/enqueue)
-  views/     response/embed builders (musicEmbeds)
-  lib/       shared helpers: guards (interaction guards), utils (formatting), db, embeds,
-             constants, logger, server, buildInfo, config, sentry (error monitoring)
+  discord/     the Discord domain — everything that knows about discord.js
+    commands.js  the route table — every command imported and grouped here, and nowhere else
+    router.js    defineCommand (route + guard middleware) and createRouter (grouping)
+    commands/  slash-command handlers — parse interaction → call service → render view → reply.
+               Grouped by nature: playback/ (play/, controls (pause/resume/skip/stop), seek,
+               queue, np, history), moderation/ (kick, timeout), fun/ (coinflip, poll, pokemon),
+               admin/ (debug, setcookies, setup), info/ (help, serverinfo)
+    events/    discord event handlers
+    reply.js   ephemeral(content) — the caller-only reply payload used for refusals
+    services/  flat, and **every file is `<name>Service.js`** — the suffix is the convention, no
+               exceptions. The yt-dlp stack is split by responsibility (see Audio Pipeline):
+               ytdlpService (process spawn/registry/reap, arg sets, cookie + proxy policy),
+               metadataService (title/duration/artwork, the raced sources, playlist dump,
+               duration backfill), innertubeService (Innertube client + search), streamService
+               (URL → AudioResource, ffmpeg transcode, teardown). Plus playbackService
+               (the queues Map + bot presence + getOrCreateQueue/enqueue),
+               spotifyService (Web API client), trackService (song_history queries),
+               healthService, pokemonService, spriteImageService (PNG compositing)
+    resolvers/ /play input → songs, one module per source — see below. Sits *above* services:
+               it orchestrates them (streamService, spotifyService), so it isn't one itself
+    views/     response/embed builders (musicEmbeds, healthEmbed, embeds)
+    guards.js  interaction guards (ensureVoice etc.)
+    guildQueue.js  the GuildQueue **entity** — one guild's playback state machine (song list,
+               audio player, stall watchdog, idle timeout). Deliberately *not* a service and not
+               in services/: it owns per-guild state, one instance per active guild. It holds no
+               module globals — it reports up via `onDestroy`/`onChange` callbacks, and
+               playbackService owns the registry and the presence those callbacks drive
+  db/          persistence: client (adapter pick + migrate on boot), schema, migrations/
+  lib/         importable by any layer, knows nothing about the app: logger, sentry, config,
+               constants, utils (formatting), buildInfo — plus server.js (HTTP dashboard)
 ```
 
-Keep commands dumb: validate input, delegate to a service, render a view. Services have no
-discord-interaction coupling (guards are the deliberate exception). `play.js` is the reference
-pattern (`ensureVoice` → `resolveQuery` → `getOrCreateQueue`/`enqueue` → `trackQueued`/`playlistQueued`).
+`lib/` means "no domain knowledge, no I/O boundary" — if a file imports `discord.js` or owns a
+connection, it belongs in `discord/` or `db/`, not here. `server.js` is the one thing in `lib/` that
+doesn't fit the rule (it's a second inbound adapter, not a helper) and is slated for removal.
 
-`src/index.js` statically imports all commands and events. **When adding a new command or event, you must manually add the import and register it in index.js.**
+**Imports use the `@/` alias** (`"@/": "./src/"` in `deno.json`) — e.g. `import { log } from "@/lib/logger.js"`.
+No relative `../` imports; the sweep that removed them also covers `tests/` and `tests/e2e/`, so run the
+e2e from `/app` in the container (where `deno.json` is) or the import map won't resolve.
 
-**Commands** (`src/commands/*.js`) — each file exports default `{ data, execute }` (+ optional `autocomplete`):
-- `data` — `SlashCommandBuilder` instance
-- `execute(interaction, client)` — handler
+Keep commands dumb: validate input, delegate to a service, render a view. Services avoid
+discord-interaction coupling (`guildQueue` needs `@discordjs/voice`; guards are the deliberate
+exception).
+`play/index.js` is the reference pattern (`ensureVoice` → `resolveQuery` → `getOrCreateQueue`/`enqueue` →
+`trackQueued`/`playlistQueued`).
 
-After adding/changing commands, run `deno task deploy` to register with Discord.
+### Resolvers (`src/discord/resolvers/`)
 
-**Events** (`src/events/*.js`) — each file exports default `{ name, once?, execute }`:
+`/play` input → `{ songs, playlistName }`. One module per source, each exporting `matches(query)` and
+`resolve(query, requestedBy, requestedById)`; `index.js` picks the first match and falls back to
+**YouTube search** for plain text. Adding a source means adding a file and listing it in `RESOLVERS`.
+
+- `youtube.js` — video URL, `?list=` playlist, and the `search()` fallback
+- `spotify.js` — owns the URL regexes (incl. the `/intl-xx/` locale segment) and the track/playlist/album
+  branching; songs carry `spotifyTrack` and resolve to YouTube lazily in `GuildQueue._playNext`, not at
+  queue time. Also exports `trackMeta` for the autocomplete label. **HTTP lives in
+  `services/spotifyService.js`** (tokens + endpoints, named methods, no `/play` knowledge) — the old
+  single `spotify.js` was both an API client and a resolver, which is what made
+  `resolvers/spotify` → `services/spotify` read as circular
+- `soundcloud.js` — track URLs and `/sets/` (also `m.soundcloud.com`, `snd.sc`), via yt-dlp
+
+**SoundCloud needs the ffmpeg transcode, and says so itself.** Measured: it serves **m4a/AAC over HLS**,
+not webm/opus, so handing yt-dlp's stdout straight to Discord as `StreamType.WebmOpus` would play silence.
+The resolver therefore sets **`transcode: true` on its songs**, `GuildQueue._playNext` passes it to
+`createStream`, and the same ffmpeg pipeline seeking already used kicks in (opus 48kHz stereo,
+`StreamType.Arbitrary`). **Declaring it on the song is what keeps `streamService` free of per-source
+special cases** — a new source needs no edit there. `createStream` still falls back to a `!isYouTubeUrl`
+sniff when the flag is absent, purely as a safety net: a source that forgets it would otherwise play
+silence, the worst failure mode. Verified end to end: SoundCloud spawns 2 procs (yt-dlp + ffmpeg),
+YouTube spawns 1, and a non-YouTube URL with no flag still gets 2.
+Two more non-YouTube consequences, both handled: the metadata race (DB/Innertube/oEmbed) is YouTube-only
+so other sources use `fetchTrackInfo` (yt-dlp alone), and `ytThumb` must not be used on a foreign id —
+it would invent a youtube URL that 404s.
+
+**Commands** (`src/discord/commands/<group>/*.js`) — each file exports `defineCommand({...})` from `router.js`:
+- `name` / `description` — build the `SlashCommandBuilder` for you
+- `options: (b) => …` — receives the real builder, so subcommands/choices/min-max all still work
+- `permissions` — `setDefaultMemberPermissions` (hides the command in the picker)
+- `guard` — route middleware from `guards.js`: returns the value the handler needs, or `null` after
+  replying with the reason. **This replaces the `if (!queue) return` prologue**, so a handler can't
+  forget it. Available: `requirePlaying`, `requireCurrent`, `ensureVoice`, `requireOwner`
+- `handler(interaction, guardValue)` — no `client` argument; use `interaction.client`
+- `autocomplete` — optional, passed straight through
+
+`pause`/`resume`/`skip`/`stop` are the same route three steps long, so they're declarations in
+`playback/controls.js` rather than four near-identical files.
+
+### Adding a new command
+
+Two files, in this order. Nothing scans the filesystem — the route table is the only registry, which
+is why `deno check` still sees the whole graph.
+
+**1. Write the command** in `src/discord/commands/<group>/<name>.js`. Pick the group by nature
+(`playback`, `moderation`, `fun`, `admin`, `info`); make a new one only if none fit.
+
+```js
+import { requirePlaying } from "@/discord/guards.js";
+import { ephemeral } from "@/discord/reply.js";
+import { defineCommand } from "@/discord/router.js";
+
+export default defineCommand({
+    name: "volume",                       // must match the filename and be unique
+    description: "Set playback volume",
+    options: (b) =>                       // omit entirely if the command takes no input
+        b.addIntegerOption((o) =>
+            o.setName("percent").setDescription("0-200").setRequired(true).setMinValue(0).setMaxValue(200)
+        ),
+    guard: requirePlaying,                // omit if the command needs no precondition
+    handler: async (interaction, queue) => {
+        const percent = interaction.options.getInteger("percent");
+        if (!queue.setVolume(percent)) return interaction.reply(ephemeral("Could not set volume."));
+        await interaction.reply(`🔊 Volume set to **${percent}%**.`);
+    },
+});
+```
+
+**2. Register it** in `src/discord/commands.js` — add the import and drop it in a group's array:
+
+```js
+import volume from "@/discord/commands/playback/volume.js";
+// …
+.include("playback", [play, pause, resume, skip, stop, seek, volume, queue, np, history], { label: "🎵 Music" })
+```
+
+Registering is also what puts it in `/help` (rendered from the router's groups), so there is no help
+list to update. Order inside the array is the order `/help` prints.
+
+**3. `deno task deploy`** to register the command with Discord, then `deno task check`.
+
+Notes:
+- **A duplicate or missing `name` throws at startup**, not silently — the router validates on `include`.
+- Need a precondition that doesn't exist yet? Add a guard to `guards.js` (return the value, or reply and
+  return `null`) rather than an `if` at the top of the handler.
+- Owner-only tooling goes in the `admin` group: set `permissions` *and* `guard: requireOwner`. The group
+  is `hidden`, so it stays out of `/help`.
+- No `client` parameter — use `interaction.client`.
+- **Events are still registered in `src/index.js` by hand**; only commands go through the router.
+
+**Events** (`src/discord/events/*.js`) — each file exports default `{ name, once?, execute }`:
 - `name` — Discord.js event name
 - `once: true` — fires once only
 - `execute(...args, client)` — client appended as last arg
 
 ## Build & Deploy
 
-No build step — Deno runs `src/index.js` directly. `deno.json` defines tasks and JSR imports (`@db/sqlite`). `deno.lock` pins all dependencies.
+No build step — Deno runs `src/index.js` directly. `deno.json` defines tasks, the `@/` alias, and npm/JSR imports. `deno.lock` pins all dependencies.
 
 CI (`.github/workflows/deploy.yml`) runs on push to `main` (when `src/**/*.js`, `deno.json`, `deno.lock`, `Dockerfile`, or the workflow change), on a **weekly schedule** (Mon 06:00 UTC, keeps yt-dlp fresh), and via `workflow_dispatch`:
 1. Build image on a **native arm64 runner** (`ubuntu-24.04-arm`), push to `ghcr.io/alessandro54/discord-music`
@@ -98,11 +217,24 @@ DB is **Turso** (remote) — no volume. See `docs/DEPLOY.md` for the full setup,
 
 ## VM & Memory
 - VM: Oracle Cloud Ampere (arm64), **12GB RAM** — no memory pressure. The old 512MB Fly heap cap (`--max-old-space-size=160`) has been removed from the Dockerfile CMD.
-- **Process hygiene still matters.** Each play spawns yt-dlp (now pip, a python child). `GuildQueue._killStream` → `destroyResource` (`services/music/stream.js`) reaps it via the shared `reap()`: stops the duration poller, closes the output stream (EOF), SIGTERM, awaits `.status`, SIGKILL fallback after 2s. Don't regress — leaked procs are sloppy even with headroom.
+- **Process hygiene still matters.** Each play spawns yt-dlp (now pip, a python child). `GuildQueue._killStream` → `destroyResource` (`services/streamService.js`) reaps it via the shared `reap()`: stops the duration poller, closes the output stream (EOF), SIGTERM, awaits `.status`, SIGKILL fallback after 2s. Don't regress — leaked procs are sloppy even with headroom.
 - Playback is sequential — only one yt-dlp alive at a time. **This is a performance constraint, not just tidiness:** 2 cores means a second concurrent extraction directly delays the audio the user is waiting on (measured: 6.9s). Anything that spawns yt-dlp off the critical path must stay clear of the streaming spawn.
 
-## Audio Pipeline (`src/services/`)
-- `fetchVideoInfo` (`stream.js`) → in-memory cache, then **`song_history` row, Innertube `getBasicInfo`, and oEmbed raced concurrently** (`Promise.any`), falling back to yt-dlp `--dump-json` only when all three reject. They were chained before; each misses often enough on this IP (DB miss, Innertube `LOGIN_REQUIRED` for ~5 of 6 videos, oEmbed 404 on unlisted) that chaining made every play pay the **sum of the misses**. Raced, a play costs the fastest source that answers. Innertube is capped at 1.5s — it has no deadline of its own.
+## Audio Pipeline (`src/discord/services/`)
+
+**The yt-dlp stack is four modules, split by reason-to-change** (it was one 847-line `streamService.js`
+with 14 exports and 9 responsibilities; see the SOLID notes at the end of this section):
+- `ytdlpService.js` — how a process runs: arg sets (`META_ARGS`, `FULL_EXTRACT_ARGS`, cache/PO-token/EJS),
+  cookie policy, proxy health + cooldown, the spawn registry, `reap`, `runYtdlp`, `shutdownStreams`
+- `metadataService.js` — what a URL *is*: `fetchVideoInfo` (raced sources + cache), `fetchTrackInfo`
+  (non-YouTube), `fetchPlaylistItems`, `backfillDuration`
+- `innertubeService.js` — the Innertube client and `searchVideos`/`searchVideo`
+- `streamService.js` — `createStream`/`destroyResource` only: spawn → prove audio → wrap in an
+  `AudioResource`, plus the ffmpeg transcode and the duration sidecar poller
+
+`streamService` → `metadataService` → `ytdlpService`, no cycles. `lib/media.js` holds the pure helpers
+they share (`extractVideoId`, `isYouTubeUrl`, `ytThumb`, `trackKey`, `fmtSecs`).
+- `fetchVideoInfo` (`streamService.js`) → in-memory cache, then **`song_history` row, Innertube `getBasicInfo`, and oEmbed raced concurrently** (`Promise.any`), falling back to yt-dlp `--dump-json` only when all three reject. They were chained before; each misses often enough on this IP (DB miss, Innertube `LOGIN_REQUIRED` for ~5 of 6 videos, oEmbed 404 on unlisted) that chaining made every play pay the **sum of the misses**. Raced, a play costs the fastest source that answers. Innertube is capped at 1.5s — it has no deadline of its own.
 - **Cold plays go fast-then-slow.** `createStream` first tries cookie-free through the proxy (~2s), and falls back to the cookie-authenticated path (~7.4s) when no audio arrives. Cookies are the ~6s tax — an authenticated session makes YouTube demand the full player-JS + nsig chain — and the cookie-free path only works on ~75% of unseen videos, so both halves are needed.
 - **`_awaitFirstByte` is what makes the fallback affordable.** It peeks the first chunk (racing the extractor's exit and a 9s budget) and puts it back before the resource reaches the player. Without it a dead extraction only surfaced when the 25s stall watchdog fired, which made "try fast, then slow" cost 32s instead of ~8s.
 - **There is deliberately no media-URL cache.** One existed and had to be removed: a googlevideo URL fetched with a plain GET is truncated by the server — on a 4:19 track `clen` said 4,429,008 bytes and a single `fetch` returned 622,592, so playback ended seconds in. yt-dlp ranges its own downloads, which is why it is correct. Reinstating a cache means writing a ranged reader first. Every test at the time read only the first 64KB, which a truncated stream satisfies — hence the e2e now pulls 1.5MB.
@@ -112,7 +244,7 @@ DB is **Turso** (remote) — no volume. See `docs/DEPLOY.md` for the full setup,
 - `createStream` → **yt-dlp** subprocess streams webm/opus (`StreamType.WebmOpus`, no transcode). Seek path pipes through ffmpeg.
 - `fetchPlaylistItems` → yt-dlp `--flat-playlist --dump-json`.
 - **Every yt-dlp call** carries shared arg groups: `COOKIES_ARGS` (`YOUTUBE_COOKIES`), `POT_ARGS` (`YTDLP_POT_BASE_URL` → bgutil provider), `EJS_ARGS` (**empty** — the nsig solver ships in the image as `yt-dlp-ejs` via `yt-dlp[default]`; see below), `--proxy` when `YTDLP_PROXY` is set, plus `--retries`/`--extractor-retries`. Metadata calls skip the streaming set and pin `player_client=ios;player_skip=js` + `--ignore-no-formats-error` (1.4–1.8s vs 3.8s) — they need a title and a duration, not a playable format URL.
-- **Every spawn goes through the registry in `stream.js`** — `track()` on spawn, `reap()` (SIGTERM → await `.status` → SIGKILL after 2s) to kill. One-shot calls (`_dumpJson`, `fetchPlaylistItems`) run via `runYtdlp()` under a hard deadline (20s metadata, 60s playlist); `Deno.Command#output()` can't be aborted, and an unbounded call held the `/play` interaction open until Discord expired it while the process sat there for the container's uptime. `shutdownStreams()` (wired to SIGTERM/SIGINT in `index.js`) reaps the lot on redeploy.
+- **Every spawn goes through the registry in `streamService.js`** — `track()` on spawn, `reap()` (SIGTERM → await `.status` → SIGKILL after 2s) to kill. One-shot calls (`_dumpJson`, `fetchPlaylistItems`) run via `runYtdlp()` under a hard deadline (20s metadata, 60s playlist); `Deno.Command#output()` can't be aborted, and an unbounded call held the `/play` interaction open until Discord expired it while the process sat there for the container's uptime. `shutdownStreams()` (wired to SIGTERM/SIGINT in `index.js`) reaps the lot on redeploy.
 - Note on zombies: `docker-init` **is** PID 1 and does reap orphans — tini's "not running as PID 1" warning at every boot is noise here, and the host shows none accumulating. The real risk is a proc that *hangs* rather than exits; nothing reaps that but us, hence the deadlines.
 - YouTube access on this IP needs **all three**: cookies (past `LOGIN_REQUIRED`) + PO token (GVS) + EJS (signature/nsig). Missing any → no audio. See `docs/DEPLOY.md`.
 - **EJS comes from the image, not from GitHub.** The Dockerfile installs `yt-dlp[default]`, whose dependency group pins `yt-dlp-ejs` to the exact version yt-dlp requires (bare `pip install yt-dlp` declares *no* dependencies at all). `--remote-components ejs:github` is the alternative to that package, not a companion — measured with the package installed, the flag still fetched from GitHub: **9.08s cold vs 2.06s** using the local copy. The container has no volume, so every deploy is a cold cache, and a GitHub outage would have meant no audio. Don't re-add the flag.
@@ -143,11 +275,12 @@ Innertube), which was already fast and didn't change. The raced sources and the 
 are only exercised by a **YouTube URL never played before** — a repeat play hits the cache/DB.
 That path is not yet measured on prod.
 
-## Database (`src/lib/db.js`)
-- Adapter pattern. `initDb` picks: **Turso** if `TURSO_DATABASE_URL` is set (or `DB_URL` starts with `libsql://`), else **SQLite** (`@db/sqlite`) from `DB_URL` (`sqlite:<path>`, default `./bot.db`). mysql adapter removed.
-- Turso uses `@libsql/client/web` (pure-HTTP Hrana, no native bindings — Deno/Docker safe). Secrets: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (full-access, not read-only).
-- Switching to Turso does **not** migrate existing `/data/bot.db` rows — history starts fresh on Turso.
-- Both adapters coerce `undefined` binds to `null` (`@db/sqlite` rejects undefined).
+## Database (`src/db/`)
+- **Drizzle ORM** over `@libsql/client` for both environments. `client.js` = init + client pick; `schema.js` = drizzle table def (source of truth); `migrations/` = drizzle-kit output, applied on boot via `migrate()` (`drizzle-orm/libsql/migrator`). song_history queries live in `src/discord/services/trackService.js` (the one query module — it stays with the domain, not in `db/`) (`saveSong`/`getHistory`/`getRecentSongs`/`getSongMeta`).
+- **Schema changes:** edit `schema.js` → `deno task db:generate` (drizzle-kit, config in `drizzle.config.js`) → commit the new `migrations/*.sql` + `meta/`. Never hand-edit applied migrations — exception: `0000` got `IF NOT EXISTS` added by hand because prod Turso already had the table before the migrator existed.
+- `initDb` picks: **Turso** via `@libsql/client/web` (pure-HTTP Hrana, no native bindings — Deno/Docker safe) if `TURSO_DATABASE_URL` is set (or `DB_URL` starts with `libsql://`), else **local libsql file** via the default `@libsql/client` entry from `DB_URL` (`sqlite:<path>`, default `./bot.db`). `@db/sqlite` removed.
+- Query results are **camelCase** (`userTag`, `playedAt`) per the drizzle schema — not snake_case column names.
+- Secrets: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (full-access, not read-only).
 
 ## YouTube Cookies
 The Oracle datacenter IP is **hard-flagged** — every yt-dlp client returns `LOGIN_REQUIRED`, so authenticated cookies are **required** (not optional). PO token + EJS alone don't bypass the login gate; cookies do. The three work together: cookies get past login, the PO-token provider refreshes the session (extends cookie life), EJS solves nsig.
@@ -155,7 +288,7 @@ Export Netscape cookies from an **incognito** window logged into a throwaway You
 ```bash
 sudo dokku config:set music-bot YOUTUBE_COOKIES="$(cat cookies.txt)"
 ```
-`stream.js` writes them to `/tmp/yt-cookies.txt` and wires `COOKIES_ARGS`. When `/play` fails with "Sign in to confirm", re-export and re-set. Full procedure + the PO-token provider sidecar setup: `docs/DEPLOY.md`.
+`streamService.js` writes them to `/tmp/yt-cookies.txt` and wires `COOKIES_ARGS`. When `/play` fails with "Sign in to confirm", re-export and re-set. Full procedure + the PO-token provider sidecar setup: `docs/DEPLOY.md`.
 
 ## Server Structure
 - 📢 COMMUNITY: #welcome (ID: 902775878075940905), #general, #announcements, #introductions, #memes, #media

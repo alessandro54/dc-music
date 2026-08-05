@@ -1,5 +1,5 @@
 import { REST, Routes } from "discord.js";
-import { commands as registered } from "./commands/index.js";
+import { commands as registered } from "@/discord/commands.js";
 
 const commands = registered
     .filter((c) => c?.data)

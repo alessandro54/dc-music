@@ -1,17 +1,17 @@
 import { Client, Collection, GatewayIntentBits, Options } from "discord.js";
-import { commands } from "./commands/index.js";
-import guildMemberAdd from "./events/guildMemberAdd.js";
-import interactionCreate from "./events/interactionCreate.js";
-import ready from "./events/ready.js";
-import { COMMIT, COMMIT_URL } from "./lib/buildInfo.js";
-import { initDb } from "./lib/db.js";
-import { log } from "./lib/logger.js";
+import { commands } from "@/discord/commands.js";
+import guildMemberAdd from "@/discord/events/guildMemberAdd.js";
+import interactionCreate from "@/discord/events/interactionCreate.js";
+import ready from "@/discord/events/ready.js";
+import { COMMIT, COMMIT_URL } from "@/lib/buildInfo.js";
+import { initDb } from "@/db/client.js";
+import { log } from "@/lib/logger.js";
 // Importing sentry.js runs Sentry.init — it happens during module evaluation,
 // before any of the code below can throw.
-import { captureError } from "./lib/sentry.js";
-import { startServer } from "./lib/server.js";
-import { queues, setClient } from "./services/music/guildQueue.js";
-import { shutdownStreams } from "./services/music/stream.js";
+import { captureError } from "@/lib/sentry.js";
+import { startServer } from "@/lib/server.js";
+import { queues, setClient } from "@/discord/services/playbackService.js";
+import { shutdownStreams } from "@/discord/services/ytdlpService.js";
 
 process.on("unhandledRejection", (err) => {
     log.error(`unhandledRejection: ${err}`);
@@ -27,10 +27,15 @@ log.info(`revision: ${COMMIT_URL ?? COMMIT}`);
 const ytdlpBin = `${import.meta.dirname}/yt-dlp`;
 try {
     Deno.statSync(ytdlpBin);
-    try { Deno.chmodSync(ytdlpBin, 0o755); } catch {}
+    try {
+        Deno.chmodSync(ytdlpBin, 0o755);
+    } catch { /* already executable */ }
     Deno.env.set("YTDLP_PATH", ytdlpBin);
-} catch {}
-Deno.env.set("PATH", `${import.meta.dirname}${Deno.build.os === "windows" ? ";" : ":"}${Deno.env.get("PATH")}`);
+} catch { /* no bundled binary — fall through to PATH */ }
+Deno.env.set(
+    "PATH",
+    `${import.meta.dirname}${Deno.build.os === "windows" ? ";" : ":"}${Deno.env.get("PATH")}`,
+);
 
 await initDb();
 

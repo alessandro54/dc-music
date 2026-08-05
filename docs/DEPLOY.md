@@ -257,7 +257,7 @@ sudo dokku network:set music-bot attach-post-deploy ytpot   # bot joins the netw
 sudo dokku config:set music-bot YTDLP_POT_BASE_URL=http://bgutil-provider:4416
 ```
 The bot reaches the provider by container name over the shared `ytpot` network.
-`stream.js` adds `--extractor-args youtubepot-bgutilhttp:base_url=$YTDLP_POT_BASE_URL`
+`streamService.js` adds `--extractor-args youtubepot-bgutilhttp:base_url=$YTDLP_POT_BASE_URL`
 to every yt-dlp call when the var is set.
 
 > The plugin pin in the Dockerfile (`bgutil-ytdlp-pot-provider==1.3.1`) **must
@@ -379,7 +379,7 @@ sudo dokku git:from-image music-bot ghcr.io/alessandro54/discord-music:<old-sha>
 | `TokenInvalid` / bot builds but never comes online | Wrong/missing `BOT_TOKEN` (must be `BOT_TOKEN`, not `DISCORD_TOKEN`; don't paste the `DASHBOARD_TOKEN` rand by mistake). Reset in Discord Dev Portal, `dokku config:set music-bot BOT_TOKEN='…'`. |
 | First deploy fails on health check | `sudo dokku checks:disable music-bot` (step 6). |
 | Dashboard reachable without auth | Set `DASHBOARD_TOKEN` and use `?token=...`. |
-| `Tini is not running as PID 1` warning | Harmless — yt-dlp reaping is explicit in `stream.js`, not Tini-dependent. |
+| `Tini is not running as PID 1` warning | Harmless — yt-dlp reaping is explicit in `streamService.js`, not Tini-dependent. |
 | OOM / bot dies mid-song | yt-dlp child not reaped — see memory notes in `CLAUDE.md`. Ensure VPS has enough RAM/swap. |
 
 ---
