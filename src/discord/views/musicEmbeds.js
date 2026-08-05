@@ -76,3 +76,21 @@ export function queueEmbed(queue) {
         .setTitle(`🎵 Queue — ${songs.length} song${songs.length !== 1 ? "s" : ""}`)
         .setDescription(lines + more);
 }
+
+// Most-played tracks. `plays` comes from the DB as a count, `duration` may be
+// null for anything queued by URL before its duration was known.
+const MEDALS = ["🥇", "🥈", "🥉"];
+
+export function leaderboardEmbed(songs) {
+    const lines = songs
+        .map((s, i) => {
+            const rank = MEDALS[i] ?? `\`${i + 1}.\``;
+            const plays = `${s.plays} play${s.plays !== 1 ? "s" : ""}`;
+            return `${rank} **[${s.title}](${s.url})** \`${s.duration ?? "—"}\` — ${plays}`;
+        })
+        .join("\n");
+
+    return embed()
+        .setTitle("🏆 Most Played")
+        .setDescription(lines);
+}

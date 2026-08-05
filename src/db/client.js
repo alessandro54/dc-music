@@ -33,6 +33,42 @@ export async function initDb() {
     await migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
 
     log.db(`DB ready (${dbKind}) — ${tursoUrl ?? (dbUrl || "./bot.db")}`);
+
+    // Deliberately not awaited. Queries group by coalesce(fingerprint, url), so
+    // they are correct while this is still running, and blocking on it would put
+    // a pile of Turso round-trips in front of the bot logging in. Failure is
+    // survivable for the same reason — log it and move on.
+    backfillFingerprints(client).catch((err) => {
+        log.error(`fingerprint backfill: ${err.message}`);
+    });
+}
+
+// Rows written before the fingerprint column existed have NULL, which would put
+// every legacy play in one group. Derived with the same function the writes use,
+// so backfilled and new rows agree; a no-op on every boot after the first.
+const BACKFILL_CHUNK = 100;
+
+async function backfillFingerprints(client) {
+    const { rows } = await client.execute(
+        "SELECT DISTINCT url FROM song_history WHERE fingerprint IS NULL AND url IS NOT NULL",
+    );
+    if (!rows.length) return;
+
+    const { trackFingerprint } = await import("@/lib/media.js");
+    const statements = rows.map((row) => {
+        const url = row[0] ?? row.url;
+        return {
+            sql: "UPDATE song_history SET fingerprint = ? WHERE fingerprint IS NULL AND url = ?",
+            args: [trackFingerprint(url), url],
+        };
+    });
+
+    // Batched because on Turso every execute() is its own HTTP round-trip —
+    // one-at-a-time turns a few hundred legacy urls into a few hundred requests.
+    for (let i = 0; i < statements.length; i += BACKFILL_CHUNK) {
+        await client.batch(statements.slice(i, i + BACKFILL_CHUNK), "write");
+    }
+    log.db(`backfilled fingerprints for ${rows.length} distinct url(s)`);
 }
 
 export function getDb() {

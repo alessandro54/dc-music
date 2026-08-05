@@ -62,8 +62,9 @@ src/
     router.js    defineCommand (route + guard middleware) and createRouter (grouping)
     commands/  slash-command handlers — parse interaction → call service → render view → reply.
                Grouped by nature: playback/ (play/, controls (pause/resume/skip/stop), seek,
-               queue, np, history), moderation/ (kick, timeout), fun/ (coinflip, poll, pokemon),
-               admin/ (debug, setcookies, setup), info/ (help, serverinfo)
+               queue, np, history), tracks/ (leaderboard), moderation/ (kick, timeout),
+               fun/ (coinflip, poll, pokemon), admin/ (debug, setcookies, setup),
+               info/ (help, serverinfo)
     events/    discord event handlers
     reply.js   ephemeral(content) — the caller-only reply payload used for refusals
     services/  flat, and **every file is `<name>Service.js`** — the suffix is the convention, no
@@ -280,6 +281,28 @@ That path is not yet measured on prod.
 - **Schema changes:** edit `schema.js` → `deno task db:generate` (drizzle-kit, config in `drizzle.config.js`) → commit the new `migrations/*.sql` + `meta/`. Never hand-edit applied migrations — exception: `0000` got `IF NOT EXISTS` added by hand because prod Turso already had the table before the migrator existed.
 - `initDb` picks: **Turso** via `@libsql/client/web` (pure-HTTP Hrana, no native bindings — Deno/Docker safe) if `TURSO_DATABASE_URL` is set (or `DB_URL` starts with `libsql://`), else **local libsql file** via the default `@libsql/client` entry from `DB_URL` (`sqlite:<path>`, default `./bot.db`). `@db/sqlite` removed.
 - Query results are **camelCase** (`userTag`, `playedAt`) per the drizzle schema — not snake_case column names.
+- **Every row carries a `fingerprint`** (`lib/media.js` `trackFingerprint`): `yt:<videoId>` for YouTube,
+  else the canonical url. One video reached three ways — pasted `youtu.be/X`, `watch?v=X&t=30`, or picked
+  from search — used to store three different url strings, which split one song into three rows in
+  `/leaderboard`, showed it twice in autocomplete, and made the metadata cache miss its own history.
+  Plays are counted and looked up by fingerprint; `url` still records the exact link used.
+- Legacy rows are filled by a **background** backfill (`db/client.js`) — `initDb` does *not* await it, and
+  `await initDb()` in `index.js` gates both the dashboard and `client.login`, so blocking on it would put
+  a pile of Turso round-trips in front of the bot connecting (measured: returns in ~1ms now). Grouping
+  uses `coalesce(fingerprint, url)`, which is what makes that safe — queries are correct while it is still
+  running, verified mid-flight. The UPDATEs are batched 100 at a time because on Turso each `execute()` is
+  its own HTTP round-trip; 120 legacy urls became 2 requests instead of 120. A failure only logs: the
+  coalesce keeps results right, and the next boot retries.
+- **Dedup happens in the database**, as one `INSERT … SELECT … WHERE NOT EXISTS` rather than a SELECT
+  followed by an INSERT. `saveSong` isn't awaited and a stall-retry re-enters `_playNext` seconds later,
+  so the two-step version could interleave — demonstrated: 5 concurrent saves of one track wrote **5 rows**
+  with the old code, 1 with this. It is also one round-trip instead of two. Uses `IS` not `=` on the
+  fingerprint, since a NULL one never equals itself and would dedup nothing.
+- Fingerprints are **deterministic on purpose** — they're persisted, so a fuzzy rule would need every row
+  rewritten. Merging separate *uploads* of one song (official video vs a re-upload) is heuristic and
+  therefore stays at read time in `mergeVariants`/`normalizeTitle`, where the rule can improve freely.
+  That matching is narrow: it strips packaging noise (Official Video, Lyrics, HD) but never Live, Remix,
+  Acoustic, Cover or Instrumental, which are genuinely different recordings.
 - Secrets: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (full-access, not read-only).
 
 ## YouTube Cookies

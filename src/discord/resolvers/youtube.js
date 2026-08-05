@@ -1,4 +1,5 @@
 import { LIMITS } from "@/lib/constants.js";
+import { canonicalUrl } from "@/lib/media.js";
 import { searchVideo } from "@/discord/services/innertubeService.js";
 import { backfillDuration, fetchPlaylistItems, fetchVideoInfo } from "@/discord/services/metadataService.js";
 
@@ -29,7 +30,9 @@ export default {
             };
         }
 
-        const track = song(await fetchVideoInfo(query), requestedBy, requestedById);
+        // Canonicalise before anything stores it: youtu.be/X, watch?v=X&t=42 and
+        // the search path's watch?v=X are one video and must share one identity.
+        const track = song(await fetchVideoInfo(canonicalUrl(query)), requestedBy, requestedById);
         // The fast metadata paths (oEmbed / gated Innertube) have no duration.
         // Ask yt-dlp for it in the background rather than making the user wait
         // seconds for a number that only decorates the embed.
