@@ -11,10 +11,10 @@ push main ──► GitHub Actions ──► build image ──► push GHCR ─
 - **Repo:** `alessandro54/discord-music`
 - **Image:** `ghcr.io/alessandro54/discord-music`
 - **Dokku app:** `music-bot`
-- **Dashboard:** `https://music.chumpitaz.dev` (optional web UI on port 3000)
-
-The bot is a Discord **gateway client** — it does not need inbound HTTP to run.
-The `:3000` HTTP server is only the optional control dashboard.
+The bot is a Discord **gateway client** and serves **no HTTP at all** — it makes
+only outbound connections. There is no port to expose, no domain to point at it,
+and no reverse-proxy config to keep working. (A control dashboard on `:3000`
+existed and was removed; see "Removed: web dashboard" at the end.)
 
 ---
 
@@ -23,7 +23,7 @@ The `:3000` HTTP server is only the optional control dashboard.
 | File | Role |
 |---|---|
 | `.github/workflows/deploy.yml` | Build → push GHCR → ssh deploy |
-| `Dockerfile` | Deno + ffmpeg + yt-dlp image; `EXPOSE 3000` |
+| `Dockerfile` | Deno + ffmpeg + yt-dlp image (no `EXPOSE` — nothing listens) |
 
 No build step — Deno runs `src/index.js` directly. Slash commands are **not**
 auto-registered on deploy (run `deno task deploy` locally when they change).
@@ -56,8 +56,8 @@ cat ~/.ssh/id_ed25519.pub | ssh root@<server-ip> "dokku ssh-keys:add admin"
 sudo dokku apps:create music-bot
 ```
 
-Dokku reuses one nginx for all apps and routes by hostname, so the bot's
-dashboard coexists with any other app (e.g. n8n) on ports 80/443 — no conflict.
+The app listens on nothing, so it never touches ports 80/443 and cannot conflict
+with anything else on the host (e.g. n8n).
 
 ### 3. Deploy SSH key for GitHub Actions
 
@@ -133,7 +133,6 @@ sudo dokku config:set music-bot \
   SPOTIFY_CLIENT_ID=<value> \
   SPOTIFY_CLIENT_SECRET=<value> \
   SPOTIFY_REFRESH_TOKEN=<value> \
-  DASHBOARD_TOKEN=$(openssl rand -hex 24) \
   SENTRY_DSN=<sentry dsn> \
   NODE_ENV=production
 ```
@@ -145,9 +144,6 @@ Notes:
 - **DB = Turso** (remote). `TURSO_DATABASE_URL` being set selects the Turso
   adapter; no `/data` volume or `DB_URL` needed. (For local SQLite instead,
   drop the Turso vars and mount a volume — see "SQLite alternative" below.)
-- **`DASHBOARD_TOKEN`** protects the dashboard's control endpoints
-  (skip/pause/stop). Required before exposing the dashboard publicly. Access it
-  at `https://music.chumpitaz.dev/?token=<value>`.
 - **`SENTRY_DSN`** — optional. When unset the SDK is a no-op (local dev stays
   quiet); when set, swallowed failures (stream drops, yt-dlp non-zero exits,
   command errors, DB writes) become issues in the `music-bot` project of the
@@ -201,25 +197,16 @@ login).
 Then **[github]** Actions → the failed run → **Re-run failed jobs**. Deploy now
 pulls the public image and runs `git:from-image`.
 
-### 8. Domain + HTTPS [server]
+### 8. Domain + HTTPS [server] — no longer applicable
 
-After the app is running and DNS resolves:
-
-**DNS** — add an `A` record: `music.chumpitaz.dev → <server-ip>`
-(verify: `dig +short music.chumpitaz.dev`).
+The bot serves no HTTP, so it needs no DNS record, no domain and no TLS
+certificate. If `music.chumpitaz.dev` was pointed at this app for the old
+dashboard, unset it on the host:
 
 ```bash
-# letsencrypt plugin (once per host)
-sudo dokku plugin:install https://github.com/dokku/dokku-letsencrypt.git
-
-sudo dokku letsencrypt:set music-bot email you@chumpitaz.dev
-sudo dokku domains:set music-bot music.chumpitaz.dev
-sudo dokku letsencrypt:enable music-bot
-sudo dokku letsencrypt:cron-job --add   # auto-renew
+sudo dokku domains:clear music-bot
+sudo dokku proxy:disable music-bot
 ```
-
-`EXPOSE 3000` in the Dockerfile tells Dokku to map proxy → container:3000 and
-inject `PORT`. The bot reads `PORT` (falls back to 3000).
 
 ---
 
@@ -354,7 +341,7 @@ Check with `dokku storage:list music-bot`. Takes effect on the next deploy.
 
 ```bash
 sudo dokku ps:report music-bot          # running state
-sudo dokku logs music-bot --tail 100    # logs (look for bot login + dashboard line)
+sudo dokku logs music-bot --tail 100    # logs (look for the bot login line)
 sudo dokku config:show music-bot        # current env
 sudo dokku ps:restart music-bot         # restart
 ```
@@ -375,9 +362,8 @@ sudo dokku git:from-image music-bot ghcr.io/alessandro54/discord-music:<old-sha>
 | `no matching manifest for linux/arm64/v8` / `Failed to pull image` | Oracle Ampere VPS is **arm64**. Build `platforms: linux/arm64` (QEMU) and fetch `yt-dlp_linux_aarch64`. |
 | Deploy job: `denied` / cannot pull image | GHCR package still private → make it public (step 7) or `dokku registry:login`. |
 | `sudo: a password is required` in deploy | sudoers rule missing/wrong path (step 4). Check `which dokku` matches. |
-| `TokenInvalid` / bot builds but never comes online | Wrong/missing `BOT_TOKEN` (must be `BOT_TOKEN`, not `DISCORD_TOKEN`; don't paste the `DASHBOARD_TOKEN` rand by mistake). Reset in Discord Dev Portal, `dokku config:set music-bot BOT_TOKEN='…'`. |
+| `TokenInvalid` / bot builds but never comes online | Wrong/missing `BOT_TOKEN` (must be `BOT_TOKEN`, not `DISCORD_TOKEN`; Reset in Discord Dev Portal, `dokku config:set music-bot BOT_TOKEN='…'`. |
 | First deploy fails on health check | `sudo dokku checks:disable music-bot` (step 6). |
-| Dashboard reachable without auth | Set `DASHBOARD_TOKEN` and use `?token=...`. |
 | `Tini is not running as PID 1` warning | Harmless — yt-dlp reaping is explicit in `streamService.js`, not Tini-dependent. |
 | OOM / bot dies mid-song | yt-dlp child not reaped — see memory notes in `CLAUDE.md`. Ensure VPS has enough RAM/swap. |
 
@@ -396,3 +382,23 @@ sudo dokku ps:restart music-bot
 ```
 
 The mount persists `/data/bot.db` across deploys.
+
+---
+
+## Removed: web dashboard
+
+`src/lib/server.js` plus `dashboard.html` and `config.html` served an optional web
+UI on `:3000` (live queue view over SSE, and skip/pause/stop controls gated by
+`DASHBOARD_TOKEN`). It was removed: the bot is a gateway client, so an inbound
+HTTP listener was the only reason it needed a port, a domain, a TLS cert and
+proxy config, and `/np`'s buttons already cover the controls from inside Discord.
+
+On the host, clean up what only existed for it:
+
+```bash
+sudo dokku config:unset music-bot DASHBOARD_TOKEN
+sudo dokku domains:clear music-bot
+sudo dokku proxy:disable music-bot
+```
+
+`src/lib/config.js` stayed — `/setup` and the welcome-message event use it.

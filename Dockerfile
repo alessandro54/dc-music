@@ -56,7 +56,5 @@ COPY app.json ./
 ENV NODE_ENV=production \
     YTDLP_PATH=/usr/local/bin/yt-dlp
 
-# Dashboard HTTP port — Dokku maps proxy 80 → this and injects PORT
-EXPOSE 3000
 
 CMD ["deno", "run", "--allow-all", "--cached-only", "src/index.js"]

@@ -54,8 +54,6 @@ services:
       # yt-dlp's player/signature cache. Without a real volume this is wiped on
       # every redeploy and each release starts cold.
       - ytdlp-cache:/data/ytdlp-cache
-    ports:
-      - "${SERVER_PORT:-3000}:3000"
 
   # Mints PO tokens (BotGuard attestation). Cheap — ~13ms per token — and it is
   # what makes the no-cookie path reliable: 3/4 videos without it, 12/12 with.

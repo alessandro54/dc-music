@@ -28,7 +28,7 @@ deploy/runbook in `docs/DEPLOY.md`.
   local/manual registration. It resolves the application id from `BOT_TOKEN` (an app id *is* its
   bot user's id) rather than reading `CLIENT_ID` — a stale id publishes commands to an app that
   isn't in the guild, and the only symptom is a command that silently never appears.
-- `deno task fmt` / `deno task lint` / `deno task check` — **`deno fmt` + `deno lint`, no Biome.** Biome was config-only (nothing installed it, no CI step, no task), so it was deleted; the `biome-ignore` pragma in `spriteImageService.js` became a `deno-lint-ignore`. `fmt` is scoped to `src/`, `tests/`, `scripts/`, `drizzle.config.js` with `indentWidth: 4` / `lineWidth: 110` to match the existing style — **Markdown and YAML are deliberately out of scope** (`deno fmt` prose-reflows `.md`, which was 879 diff lines across the docs). `src/db/migrations/` and the dashboard HTML are excluded too. `require-await` is off: `async execute` is the handler contract (the dispatcher awaits every one), so the rule flags convention, not bugs.
+- `deno task fmt` / `deno task lint` / `deno task check` — **`deno fmt` + `deno lint`, no Biome.** Biome was config-only (nothing installed it, no CI step, no task), so it was deleted; the `biome-ignore` pragma in `spriteImageService.js` became a `deno-lint-ignore`. `fmt` is scoped to `src/`, `tests/`, `scripts/`, `drizzle.config.js` with `indentWidth: 4` / `lineWidth: 110` to match the existing style — **Markdown and YAML are deliberately out of scope** (`deno fmt` prose-reflows `.md`, which was 879 diff lines across the docs). `src/db/migrations/` is excluded too. `require-await` is off: `async execute` is the handler contract (the dispatcher awaits every one), so the rule flags convention, not bugs.
 - `deno task test` — `tests/music/` (duration sidecar, spawn lifecycle, fast-path fallback). Stubs `Deno.Command`, no network. The three stale `bun:test` files were deleted; they had not been runnable since the `services/` move.
 - `tests/e2e/stream.e2e.js` — real yt-dlp against real YouTube, so it only means anything **inside the deployed container**: `docker cp` it in, then `dokku enter music-bot web deno run --allow-all …`. It pulls 1.5MB deliberately: reading only the first 64KB is what let a truncated-stream bug ship.
 
@@ -43,7 +43,6 @@ SPOTIFY_CLIENT_SECRET=
 SPOTIFY_REFRESH_TOKEN=       # user-authorized token for playlist reads — `deno task spotify-auth` to generate
 YTDLP_POT_BASE_URL=          # http://bgutil-provider:4416 — PO-token provider sidecar
 YOUTUBE_COOKIES=             # Netscape cookies — REQUIRED on this datacenter IP (LOGIN_REQUIRED)
-DASHBOARD_TOKEN=             # gates the web dashboard control endpoints
 OWNER_ID=                    # Discord user id allowed to run /debug (admin-only + owner-gated)
 SENTRY_DSN=                  # optional — error monitoring (org alessandro54, project music-bot); unset = SDK no-op
 # SENTRY_ENVIRONMENT=        # optional override; defaults to NODE_ENV=production ? production : development
@@ -90,12 +89,12 @@ src/
                playbackService owns the registry and the presence those callbacks drive
   db/          persistence: client (adapter pick + migrate on boot), schema, migrations/
   lib/         importable by any layer, knows nothing about the app: logger, sentry, config,
-               constants, utils (formatting), buildInfo — plus server.js (HTTP dashboard)
+               constants, utils (formatting), media (url/duration helpers), buildInfo
 ```
 
 `lib/` means "no domain knowledge, no I/O boundary" — if a file imports `discord.js` or owns a
-connection, it belongs in `discord/` or `db/`, not here. `server.js` is the one thing in `lib/` that
-doesn't fit the rule (it's a second inbound adapter, not a helper) and is slated for removal.
+connection, it belongs in `discord/` or `db/`, not here. Every file in `lib/` now satisfies that:
+`server.js`, the one exception, went with the dashboard.
 
 **Imports use the `@/` alias** (`"@/": "./src/"` in `deno.json`) — e.g. `import { log } from "@/lib/logger.js"`.
 No relative `../` imports; the sweep that removed them also covers `tests/` and `tests/e2e/`, so run the
@@ -300,7 +299,7 @@ That path is not yet measured on prod.
   `/leaderboard`, showed it twice in autocomplete, and made the metadata cache miss its own history.
   Plays are counted and looked up by fingerprint; `url` still records the exact link used.
 - Legacy rows are filled by a **background** backfill (`db/client.js`) — `initDb` does *not* await it, and
-  `await initDb()` in `index.js` gates both the dashboard and `client.login`, so blocking on it would put
+  `await initDb()` in `index.js` gates `client.login`, so blocking on it would put
   a pile of Turso round-trips in front of the bot connecting (measured: returns in ~1ms now). Grouping
   uses `coalesce(fingerprint, url)`, which is what makes that safe — queries are correct while it is still
   running, verified mid-flight. The UPDATEs are batched 100 at a time because on Turso each `execute()` is

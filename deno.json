@@ -4,7 +4,7 @@
     "indentWidth": 4,
     "lineWidth": 110,
     "include": ["src/", "tests/", "scripts/", "drizzle.config.js"],
-    "exclude": ["src/db/migrations/", "src/lib/dashboard.html", "src/lib/config.html"]
+    "exclude": ["src/db/migrations/"]
   },
   "lint": {
     "include": ["src/", "tests/", "scripts/"],
