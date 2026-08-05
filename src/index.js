@@ -9,7 +9,6 @@ import { log } from "@/lib/logger.js";
 // Importing sentry.js runs Sentry.init — it happens during module evaluation,
 // before any of the code below can throw.
 import { captureError } from "@/lib/sentry.js";
-import { startServer } from "@/lib/server.js";
 import { queues, setClient } from "@/discord/services/playbackService.js";
 import { shutdownStreams } from "@/discord/services/ytdlpService.js";
 
@@ -72,9 +71,6 @@ for (const event of [guildMemberAdd, interactionCreate, ready]) {
 }
 
 setClient(client);
-
-const port = Deno.env.get("SERVER_PORT") || Deno.env.get("PORT") || 3000;
-startServer(port, queues, client);
 
 client.login(Deno.env.get("BOT_TOKEN"));
 

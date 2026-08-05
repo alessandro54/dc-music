@@ -22,7 +22,6 @@ The result: ~5% CPU instead of 50%. No quality loss. No added latency.
 - **yt-dlp streaming** — battle-tested, updated daily, handles everything YouTube throws at it
 - **Self-hosted** — your server, your data, no subscriptions, no rate limits
 - **SQLite out of the box** — no database to set up, works on day one
-- **Web dashboard** — live queue, controls, and per-guild config from your browser
 - **Spotify support** — tracks, albums, playlists resolved to YouTube automatically
 - **Album art** — Now Playing embeds show Spotify/YouTube cover art
 
@@ -35,8 +34,7 @@ The result: ~5% CPU instead of 50%. No quality loss. No added latency.
 - `/np` — now playing embed with album art + inline buttons
 - Autocomplete returns live YouTube video results (title + duration); recent history when empty
 - Song history (SQLite by default)
-- Web dashboard with live queue + skip/pause/stop controls
-- Per-guild config (welcome channel, rules channel) via dashboard or `/setup`
+- Per-guild config (welcome channel, rules channel) via `/setup`
 - `/debug` — owner-gated health snapshot (memory, live streams, queue state)
 - Resilient playback: stall watchdog skips a hung stream; auto-retries transient 403s
 
@@ -68,9 +66,6 @@ SPOTIFY_CLIENT_SECRET=
 # Optional — restrict /debug to a single Discord user id (admin-only otherwise)
 OWNER_ID=
 
-# Optional — protect the web dashboard
-DASHBOARD_TOKEN=your_secret_token
-
 # Optional — YouTube cookies (bypass bot detection on datacenter IPs)
 # Export from browser as Netscape format, paste full content here
 YOUTUBE_COOKIES=
@@ -96,19 +91,6 @@ the Dokku host to release it. Slash commands are registered with `deno task depl
 **Optional host config:** `SPOTIFY_*`, `TURSO_*`, `OWNER_ID`, `YOUTUBE_COOKIES`, `SENTRY_DSN`
 
 Set them with `dokku config:set music-bot KEY=…`. Full runbook: [`docs/DEPLOY.md`](docs/DEPLOY.md).
-
----
-
-## Dashboard
-
-The bot serves a web dashboard on `SERVER_PORT` (default `3000`).
-
-```
-http://your-host:port/         # now playing + queue controls
-http://your-host:port/config   # server configuration
-```
-
-If `DASHBOARD_TOKEN` is set, append `?token=<your_token>` to the URL. The token is logged on startup.
 
 ---
 
