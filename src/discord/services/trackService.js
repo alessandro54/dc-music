@@ -21,6 +21,22 @@ export async function saveSong({ guildId, userId, userTag, title, url, duration,
     // form permanently splits a song's play count.
     url = url ? canonicalUrl(url) : url;
     const fingerprint = url ? trackFingerprint(url) : null;
+    // Column/table names come from the drizzle schema rather than being spelled
+    // out, so a rename in schema.js propagates here instead of failing at runtime.
+    // `sql.identifier` and not the column itself: interpolating the column renders
+    // it table-qualified ("song_history"."guild_id"), which an INSERT column list
+    // rejects.
+    const fields = [
+        [songHistory.guildId, guildId ?? null],
+        [songHistory.userId, userId ?? null],
+        [songHistory.userTag, userTag ?? null],
+        [songHistory.title, title ?? null],
+        [songHistory.url, url ?? null],
+        [songHistory.fingerprint, fingerprint],
+        [songHistory.duration, duration == null ? null : String(duration)],
+        [songHistory.viaPlaylist, viaPlaylist ? 1 : 0],
+        [songHistory.source, source ?? null],
+    ];
     try {
         // Dedup in the database, not in two steps. A stall-retry re-enters
         // _playNext seconds later and saveSong isn't awaited, so a SELECT-then-
@@ -28,26 +44,25 @@ export async function saveSong({ guildId, userId, userTag, title, url, duration,
         // INSERT ... WHERE NOT EXISTS it is atomic, and it costs one round-trip
         // instead of two (on Turso, one HTTP request instead of two).
         //
+        // Still a sql`` statement rather than the query builder, and it has to be:
+        // `insert().select()` requires a FROM and demands every column in
+        // table-definition order, so it can't express a bare-literal source row
+        // that leaves `id`/`played_at` to their defaults. `onConflictDoNothing` is
+        // out too — the dedup key is a 5-minute window, which no unique index
+        // expresses.
+        //
         // `IS` rather than `=` for the fingerprint: a NULL one (a url-less Spotify
         // placeholder) never equals itself, so `=` would dedup nothing.
         await db.run(sql`
-            insert into song_history
-                (guild_id, user_id, user_tag, title, url, fingerprint, duration, via_playlist, source)
-            select
-                ${guildId ?? null},
-                ${userId ?? null},
-                ${userTag ?? null},
-                ${title ?? null},
-                ${url ?? null},
-                ${fingerprint},
-                ${duration == null ? null : String(duration)},
-                ${viaPlaylist ? 1 : 0},
-                ${source ?? null}
+            insert into ${songHistory} (${
+            sql.join(fields.map(([column]) => sql.identifier(column.name)), sql`, `)
+        })
+            select ${sql.join(fields.map(([, value]) => sql`${value}`), sql`, `)}
             where not exists (
-                select 1 from song_history
-                where guild_id is ${guildId ?? null}
-                  and fingerprint is ${fingerprint}
-                  and played_at > datetime('now', '-5 minutes')
+                select 1 from ${songHistory}
+                where ${songHistory.guildId} is ${guildId ?? null}
+                  and ${songHistory.fingerprint} is ${fingerprint}
+                  and ${songHistory.playedAt} > datetime('now', '-5 minutes')
             )
         `);
     } catch (err) {
