@@ -334,3 +334,9 @@ Deno.test("no cookies are sent when YTDLP_PROXY is unset (they are the only auth
         restore();
     }
 });
+
+// NOTE: the "connect timeout must not truncate the stream" property is not unit
+// tested. The budget is 15s, and createAudioResource touches the stream itself,
+// so a fast fake cannot distinguish a connect timeout from a lifetime one.
+// tests/e2e/streamCache.e2e.js covers it — it reads a full 64KB off a real
+// cached URL, which is exactly what a lifetime timeout truncated.

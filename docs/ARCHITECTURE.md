@@ -161,10 +161,20 @@ the proxy path stops needing it day to day.
 through the proxy is just as slow as sending them direct, so leaving them on
 would make `YTDLP_PROXY` pointless. They return the instant anything falls back.
 
-**The fast path is ~95% reliable** (18 of 19 measured), and a stream has no
-retry of its own — so a stalled stream forces the direct, cookie-authenticated
-path and replays the same track once before giving up on it. A second stall is
-treated as a genuinely bad track.
+**The cookie-free path is ~75% reliable on videos yt-dlp has not seen before**
+(6 of 8 fresh videos; an earlier 18-of-19 figure was measured by re-testing the
+same videos, which warms yt-dlp's cache and flattered it). So it is used only
+where a miss is cheap:
+
+| call | cookies | why |
+| --- | --- | --- |
+| streaming spawn | **always** | the resource is already handed to the player; a miss costs a 25s stall |
+| prefetch | omitted when proxied | a miss just means the next play is a normal cold one |
+| metadata / playlist | omitted when proxied | `runYtdlp` retries direct with cookies immediately |
+
+The practical effect: a first play of an unseen track is the reliable ~7.4s,
+and anything prefetched or replayed is ~2s from cache. A stalled stream still
+forces the direct path and replays the track once before skipping it.
 
 ## Known sharp edges
 

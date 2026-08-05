@@ -94,15 +94,32 @@ function proxyArgs() {
 }
 
 // Cookies are the ~6s tax: an authenticated session makes YouTube demand the
-// full player-JS + nsig chain on every play. Measured across 12 videos, the
-// proxy path needs no cookies at all (12/12 with the PO token). So while the
-// proxy is healthy we deliberately omit them — sending cookies through the
-// proxy is just as slow as sending them direct, which would make YTDLP_PROXY
-// pointless. They come back the moment we fall back to a direct call, which is
-// what keeps YOUTUBE_COOKIES worth having.
-function cookieArgs() {
-    if (PROXY && Date.now() >= proxyDisabledUntil) return [];
+// full player-JS + nsig chain on every play, and sending them through the proxy
+// is exactly as slow as sending them direct.
+//
+// `critical` marks a call whose failure the listener actually hears. Measured
+// on fresh videos, the cookie-free proxy path succeeds ~75% of the time — fine
+// for prefetch and metadata, which retry or simply fall back, and unacceptable
+// for the streaming spawn, where the resource is already handed to the player
+// and a failure costs a 25s stall before anything can recover. So streams keep
+// their cookies and stay reliable; the fast path is spent where a miss is free.
+function cookieArgs({ critical = false } = {}) {
+    if (!critical && PROXY && Date.now() >= proxyDisabledUntil) return [];
     return COOKIES_ARGS;
+}
+
+// A media URL is minted for whichever egress IP asked for it, so a URL the
+// proxy obtained must also be *fetched* through the proxy — otherwise the
+// cached-URL path 403s and silently falls back to yt-dlp, which is exactly
+// what happened the first time the proxy was switched on.
+let _proxyClient = null;
+function proxyClient() {
+    // Same health gate as proxyArgs(): in cooldown we go direct, and a URL
+    // minted through the proxy will then 403 and evict itself, which is the
+    // intended fallback rather than a failure.
+    if (!PROXY || Date.now() < proxyDisabledUntil) return undefined;
+    _proxyClient ??= Deno.createHttpClient({ proxy: { url: PROXY } });
+    return _proxyClient;
 }
 
 function markProxyBad(reason) {
@@ -530,7 +547,20 @@ function cachedFormatUrl(videoId) {
 // here instead of surfacing later as a silent track.
 async function _directStream(videoId, mediaUrl) {
     try {
-        const res = await fetch(mediaUrl, { signal: AbortSignal.timeout(6000) });
+        // Bound the *connect*, never the stream. AbortSignal.timeout() covers
+        // the whole request lifetime, so passing it here truncated playback a
+        // few seconds in — the body is a song, not a short response. Cancel the
+        // timer once headers arrive and let the audio flow for as long as it
+        // takes. googlevideo's first byte is regularly 2-9s, so the budget is
+        // generous on purpose.
+        const ac = new AbortController();
+        const connectTimer = setTimeout(() => ac.abort(), 15000);
+        let res;
+        try {
+            res = await fetch(mediaUrl, { signal: ac.signal, client: proxyClient() });
+        } finally {
+            clearTimeout(connectTimer);
+        }
         if (!res.ok || !res.body) {
             formatUrlCache.delete(videoId);
             log.warn(`[stream] cached URL for ${videoId} returned ${res.status} — re-extracting`);
@@ -766,7 +796,7 @@ function _ytdlpStream(url, seekSeconds, onDuration = null) {
         "--retries", "5", "--fragment-retries", "5", "--extractor-retries", "3",
         // Fail a dead/stalled connection fast instead of hanging the stream.
         "--socket-timeout", "15",
-        ...cookieArgs(), ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
+        ...cookieArgs({ critical: true }), ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
     ];
 
     if (seekSeconds > 0) {
