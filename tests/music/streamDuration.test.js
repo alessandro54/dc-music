@@ -3,6 +3,7 @@
 // only spawns when nothing cheaper has filled the duration in.
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@^1.0.0";
 import {
+    _awaitFirstByte,
     _resetShutdownForTests,
     backfillDuration,
     createStream,
@@ -21,6 +22,9 @@ let spawned = [];
 // When true, spawned procs never exit on their own — they only end when killed,
 // which is how a hung yt-dlp behaves.
 let hang = false;
+// Bytes the fake yt-dlp writes to stdout. 0 = an extraction that produced no
+// audio, which createStream must reject rather than hand to the player.
+let emitBytes = 4096;
 
 // Stand-in for a spawned yt-dlp/ffmpeg: records its argv and the signals it was
 // sent, produces an empty stdout stream and no stderr, and exits successfully.
@@ -41,7 +45,14 @@ class FakeCommand {
             : Promise.resolve({ success: true, code: 0, signal: null });
         if (!hang) record.exited = true;
         return {
-            stdout: new ReadableStream({ start: (c) => c.close() }),
+            // createStream now proves audio is flowing before handing back a
+            // resource, so a fake extraction has to emit some.
+            stdout: new ReadableStream({
+                start(c) {
+                    if (emitBytes) c.enqueue(new Uint8Array(emitBytes));
+                    c.close();
+                },
+            }),
             stdin: new WritableStream(),
             stderr: (async function* () {})(),
             status,
@@ -68,6 +79,7 @@ class FakeCommand {
 function stubCommands() {
     spawned = [];
     hang = false;
+    emitBytes = 4096;
     _resetShutdownForTests();
     Deno.Command = FakeCommand;
 }
@@ -274,4 +286,55 @@ Deno.test("backfillDuration keeps clear of the streaming spawn", async () => {
     } finally {
         restore();
     }
+});
+
+Deno.test("createStream rejects an extraction that produces no audio", async () => {
+    stubCommands();
+    emitBytes = 0; // extractor ran but never emitted a byte
+    try {
+        // Without a proxy configured there is no fast path to fall back from,
+        // so the single attempt fails and must throw rather than hand the
+        // player a silent resource that only the 25s watchdog would catch.
+        let threw = null;
+        await createStream(URL_A, 0, () => {}).catch((e) => {
+            threw = e.message;
+        });
+        assertEquals(threw, "stream produced no audio");
+    } finally {
+        restore();
+    }
+});
+
+// The replay property is tested against the helper directly: routing it through
+// createStream means going through @discordjs/voice, which wraps the stream in
+// its own transcoding pipeline and never hands back the raw bytes.
+Deno.test("_awaitFirstByte replays the chunk it peeked, then the rest", async () => {
+    const chunks = [new Uint8Array(100).fill(1), new Uint8Array(50).fill(2)];
+    const src = new ReadableStream({
+        start(c) {
+            for (const ch of chunks) c.enqueue(ch);
+            c.close();
+        },
+    });
+    const neverExits = { status: new Promise(() => {}) };
+
+    const out = await _awaitFirstByte(src, neverExits);
+    assert(out, "rejected a stream that produced bytes");
+
+    let total = 0;
+    const reader = out.getReader();
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+    }
+    // 150, not 50: dropping the peeked chunk would silently truncate the start
+    // of every track.
+    assertEquals(total, 150, "peeked chunk was not replayed");
+});
+
+Deno.test("_awaitFirstByte gives up when the extractor exits without audio", async () => {
+    const src = new ReadableStream({ start: (c) => c.close() });
+    const exited = { status: Promise.resolve({ success: false, code: 1, signal: null }) };
+    assertEquals(await _awaitFirstByte(src, exited), null);
 });

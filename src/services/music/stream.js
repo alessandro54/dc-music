@@ -684,6 +684,49 @@ export async function prefetchFormatUrl(url) {
     }
 }
 
+// Wait for the stream to actually produce a byte, so a dead extraction is
+// caught here instead of surfacing 25s later as a stalled track. Returns a
+// stream with that first chunk put back, or null when nothing ever arrived.
+const FIRST_BYTE_TIMEOUT_MS = 9000;
+
+export async function _awaitFirstByte(webStream, proc) {
+    const reader = webStream.getReader();
+    let timer;
+    const deadline = new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ timedOut: true }), FIRST_BYTE_TIMEOUT_MS);
+    });
+    // A failed extractor exits within a couple of seconds; racing its status
+    // means we don't sit out the whole budget for a video that is never coming.
+    const died = proc.status.then(() => ({ died: true })).catch(() => ({ died: true }));
+
+    let first;
+    try {
+        first = await Promise.race([reader.read(), deadline, died]);
+    } finally {
+        clearTimeout(timer);
+    }
+
+    if (!first || first.timedOut || first.died || first.done || !first.value?.length) {
+        reader.cancel().catch(() => {});
+        return null;
+    }
+
+    const chunk = first.value;
+    return new ReadableStream({
+        start(c) {
+            c.enqueue(chunk);
+        },
+        async pull(c) {
+            const { done, value } = await reader.read();
+            if (done) c.close();
+            else c.enqueue(value);
+        },
+        cancel(reason) {
+            reader.cancel(reason).catch(() => {});
+        },
+    });
+}
+
 export async function createStream(url, seekSeconds = 0, onDuration = null) {
     // Seeking needs yt-dlp's --download-sections; only plain playback can use
     // the cached URL.
@@ -700,7 +743,23 @@ export async function createStream(url, seekSeconds = 0, onDuration = null) {
             }
         }
     }
-    return _ytdlpStream(url, seekSeconds, onDuration);
+    // The cookie-free path is ~3x faster (1.8s vs 7.4s) but only succeeds on
+    // ~75% of unseen videos, so it is only safe now that a failure is detected
+    // in seconds rather than surfacing as a 25s stall. Try fast, prove audio is
+    // flowing, and fall back to the authenticated path when it isn't.
+    const canTryFast = PROXY && Date.now() >= proxyDisabledUntil && COOKIES_ARGS.length > 0;
+    if (canTryFast) {
+        const started = performance.now();
+        const fast = await _verifiedStream(url, seekSeconds, onDuration, { useCookies: false });
+        if (fast) return fast;
+        log.warn(`[stream] fast path gave no audio in ${Math.round(performance.now() - started)}ms — retrying with cookies`);
+    }
+
+    const resource = await _verifiedStream(url, seekSeconds, onDuration, { useCookies: true });
+    if (resource) return resource;
+    // Nothing produced audio. Throwing lets GuildQueue skip the track with a
+    // real error instead of playing silence until the watchdog notices.
+    throw new Error("stream produced no audio");
 }
 
 // The streaming extraction already parses the duration — `--print-to-file` drops
@@ -777,7 +836,7 @@ export async function destroyResource(resource) {
     await Promise.all((resource._procs ?? []).map((proc) => reap(proc)));
 }
 
-function _ytdlpStream(url, seekSeconds, onDuration = null) {
+function _ytdlpStream(url, seekSeconds, onDuration = null, { useCookies = true } = {}) {
     const videoId = extractVideoId(url);
     let durationFile = null;
     if (onDuration && videoId) {
@@ -796,7 +855,7 @@ function _ytdlpStream(url, seekSeconds, onDuration = null) {
         "--retries", "5", "--fragment-retries", "5", "--extractor-retries", "3",
         // Fail a dead/stalled connection fast instead of hanging the stream.
         "--socket-timeout", "15",
-        ...cookieArgs({ critical: true }), ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
+        ...(useCookies ? COOKIES_ARGS : []), ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
     ];
 
     if (seekSeconds > 0) {
@@ -865,14 +924,36 @@ function _ytdlpStream(url, seekSeconds, onDuration = null) {
         }).spawn();
         track(ffmpeg);
         ytdlp.stdout.pipeTo(ffmpeg.stdin).catch(() => {});
-        const resource = createAudioResource(Readable.fromWeb(ffmpeg.stdout), { inputType: StreamType.Arbitrary });
-        resource._procs = [ytdlp, ffmpeg];
-        resource._cleanup = () => durationWatch?.stop();
-        return resource;
+        return {
+            out: ffmpeg.stdout,
+            inputType: StreamType.Arbitrary,
+            procs: [ytdlp, ffmpeg],
+            lead: ffmpeg,
+            cleanup: () => durationWatch?.stop(),
+        };
     }
 
-    const resource = createAudioResource(Readable.fromWeb(ytdlp.stdout), { inputType: StreamType.WebmOpus });
-    resource._procs = [ytdlp];
-    resource._cleanup = () => durationWatch?.stop();
+    return {
+        out: ytdlp.stdout,
+        inputType: StreamType.WebmOpus,
+        procs: [ytdlp],
+        lead: ytdlp,
+        cleanup: () => durationWatch?.stop(),
+    };
+}
+
+// Spawn, then prove audio is flowing before building the resource. Returns
+// null when the extraction produced nothing, so the caller can try another way.
+async function _verifiedStream(url, seekSeconds, onDuration, opts) {
+    const spawned = _ytdlpStream(url, seekSeconds, onDuration, opts);
+    const verified = await _awaitFirstByte(spawned.out, spawned.lead);
+    if (!verified) {
+        spawned.cleanup();
+        await Promise.all(spawned.procs.map((p) => reap(p)));
+        return null;
+    }
+    const resource = createAudioResource(Readable.fromWeb(verified), { inputType: spawned.inputType });
+    resource._procs = spawned.procs;
+    resource._cleanup = spawned.cleanup;
     return resource;
 }
