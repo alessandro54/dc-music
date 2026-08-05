@@ -25,7 +25,15 @@ export default {
             const items = await fetchPlaylistItems(query, LIMITS.PLAYLIST_MAX);
             if (!items.length) throw new Error("Playlist not found or empty");
             return {
-                songs: items.map((v) => ({ ...v, requestedBy, requestedById, spotifyTrack: null })),
+                // viaPlaylist keeps these out of the "recently played" lists —
+                // see db/schema.js.
+                songs: items.map((v) => ({
+                    ...v,
+                    requestedBy,
+                    requestedById,
+                    spotifyTrack: null,
+                    viaPlaylist: true,
+                })),
                 playlistName: null,
             };
         }

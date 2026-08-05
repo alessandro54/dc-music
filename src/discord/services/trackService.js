@@ -9,7 +9,12 @@ import { captureError } from "@/lib/sentry.js";
 // keeps grouping correct in the meantime.
 const FINGERPRINT = sql`coalesce(${songHistory.fingerprint}, ${songHistory.url})`;
 
-export async function saveSong({ guildId, userId, userTag, title, url, duration }) {
+// "Recently played" means tracks someone chose. A playlist contributes plays but
+// not picks — one 100-track album would otherwise bury every deliberate one. Rows
+// written before the column exists are NULL, which `is not 1` treats as a pick.
+const CHOSEN = sql`${songHistory.viaPlaylist} is not 1`;
+
+export async function saveSong({ guildId, userId, userTag, title, url, duration, viaPlaylist }) {
     const db = getDb();
     if (!db) return;
     // Resolvers canonicalise too, but history is the one place where a stray URL
@@ -26,7 +31,8 @@ export async function saveSong({ guildId, userId, userTag, title, url, duration 
         // `IS` rather than `=` for the fingerprint: a NULL one (a url-less Spotify
         // placeholder) never equals itself, so `=` would dedup nothing.
         await db.run(sql`
-            insert into song_history (guild_id, user_id, user_tag, title, url, fingerprint, duration)
+            insert into song_history
+                (guild_id, user_id, user_tag, title, url, fingerprint, duration, via_playlist)
             select
                 ${guildId ?? null},
                 ${userId ?? null},
@@ -34,7 +40,8 @@ export async function saveSong({ guildId, userId, userTag, title, url, duration 
                 ${title ?? null},
                 ${url ?? null},
                 ${fingerprint},
-                ${duration == null ? null : String(duration)}
+                ${duration == null ? null : String(duration)},
+                ${viaPlaylist ? 1 : 0}
             where not exists (
                 select 1 from song_history
                 where guild_id is ${guildId ?? null}
@@ -48,6 +55,7 @@ export async function saveSong({ guildId, userId, userTag, title, url, duration 
     }
 }
 
+// Excludes playlist filler — see CHOSEN.
 export async function getHistory(guildId, limit = 10) {
     const db = getDb();
     if (!db) return [];
@@ -60,7 +68,7 @@ export async function getHistory(guildId, limit = 10) {
             playedAt: songHistory.playedAt,
         })
         .from(songHistory)
-        .where(eq(songHistory.guildId, guildId))
+        .where(and(eq(songHistory.guildId, guildId), CHOSEN))
         .orderBy(desc(songHistory.playedAt))
         .limit(limit);
 }
@@ -80,7 +88,7 @@ export async function getRecentSongs(guildId, limit = 10) {
             playedAt: max(songHistory.playedAt),
         })
         .from(songHistory)
-        .where(eq(songHistory.guildId, guildId))
+        .where(and(eq(songHistory.guildId, guildId), CHOSEN))
         .groupBy(FINGERPRINT)
         .orderBy(desc(max(songHistory.playedAt)))
         .limit(limit);

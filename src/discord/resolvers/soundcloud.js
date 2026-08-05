@@ -36,6 +36,7 @@ export default {
                     requestedById,
                     spotifyTrack: null,
                     transcode: true,
+                    viaPlaylist: true,
                 })),
                 playlistName: null,
             };

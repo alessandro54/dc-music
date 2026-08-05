@@ -1,0 +1,1 @@
+ALTER TABLE `song_history` ADD `via_playlist` integer;

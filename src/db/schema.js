@@ -13,6 +13,11 @@ export const songHistory = sqliteTable("song_history", {
     // link a play used; this is what plays are counted and looked up by, so the
     // same video pasted as youtu.be/X and watch?v=X is one track.
     fingerprint: text("fingerprint"),
+    // True when the track arrived as part of a playlist/album/set rather than
+    // being asked for by name. Those plays still count towards /leaderboard —
+    // they were played — but they're filler in the "recently played" lists, where
+    // one 100-track playlist would bury every deliberate pick.
+    viaPlaylist: integer("via_playlist", { mode: "boolean" }),
     duration: text("duration"),
     playedAt: text("played_at").default(sql`CURRENT_TIMESTAMP`),
 }, (t) => [

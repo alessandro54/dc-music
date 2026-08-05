@@ -15,6 +15,13 @@
       "when": 1785907296307,
       "tag": "0001_familiar_kronos",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785910705840,
+      "tag": "0002_fresh_rick_jones",
+      "breakpoints": true
     }
   ]
 }

@@ -293,6 +293,11 @@ That path is not yet measured on prod.
   running, verified mid-flight. The UPDATEs are batched 100 at a time because on Turso each `execute()` is
   its own HTTP round-trip; 120 legacy urls became 2 requests instead of 120. A failure only logs: the
   coalesce keeps results right, and the next boot retries.
+- **Playlist tracks are plays, not picks.** Every row carries `via_playlist` (migration 0002), set by the
+  resolvers on playlist/album/set branches and carried through `_playNext` into history. `/history` and
+  the `/play` autocomplete suggestions filter it out (`CHOSEN` in trackService) — otherwise one 100-track
+  album buries every deliberate pick in both lists. `/leaderboard` still counts them: they *were* played.
+  Rows predating the column are NULL, which `is not 1` treats as a pick.
 - **Dedup happens in the database**, as one `INSERT … SELECT … WHERE NOT EXISTS` rather than a SELECT
   followed by an INSERT. `saveSong` isn't awaited and a stall-retry re-enters `_playNext` seconds later,
   so the two-step version could interleave — demonstrated: 5 concurrent saves of one track wrote **5 rows**

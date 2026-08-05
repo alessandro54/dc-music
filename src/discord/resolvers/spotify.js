@@ -59,7 +59,7 @@ export default {
             }
             const songs = items.items
                 .filter((i) => i.item?.track)
-                .map((i) => trackToSong(i.item, requestedBy, requestedById));
+                .map((i) => ({ ...trackToSong(i.item, requestedBy, requestedById), viaPlaylist: true }));
             return { songs, playlistName: meta.name };
         }
 
@@ -73,7 +73,7 @@ export default {
             const art = album.images?.[0]?.url;
             const songs = tracks.items
                 .slice(0, LIMITS.PLAYLIST_MAX)
-                .map((t) => trackToSong(t, requestedBy, requestedById, art));
+                .map((t) => ({ ...trackToSong(t, requestedBy, requestedById, art), viaPlaylist: true }));
             return { songs, playlistName: album.name };
         }
 
