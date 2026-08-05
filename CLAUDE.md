@@ -74,7 +74,8 @@ src/
                (URL → AudioResource, ffmpeg transcode, teardown). Plus playbackService
                (the queues Map + bot presence + getOrCreateQueue/enqueue),
                spotifyService (Web API client), trackService (song_history queries),
-               healthService, pokemonService, spriteImageService (PNG compositing)
+               artworkService (square album art), healthService, pokemonService,
+               spriteImageService (PNG compositing)
     resolvers/ /play input → songs, one module per source — see below. Sits *above* services:
                it orchestrates them (streamService, spotifyService), so it isn't one itself
     views/     response/embed builders (musicEmbeds, healthEmbed, embeds)
@@ -274,6 +275,32 @@ Caveat on the "after" column: it's **one play, and it took the search path** (`s
 Innertube), which was already fast and didn't change. The raced sources and the duration sidecar
 are only exercised by a **YouTube URL never played before** — a repeat play hits the cache/DB.
 That path is not yet measured on prod.
+
+## Album Art (`services/artworkService.js`)
+
+YouTube serves 4:3/16:9 thumbnails, so a square album cover arrives **padded with
+black bars** — which is what the Now Playing embed showed. **Spotify is the single
+art provider** for every source: its album images are square 640x640 and the
+credentials are already there. Spotify-sourced songs carry their art already;
+`artworkService` covers the YouTube paths (single video + search).
+
+- `artworkQuery()` strips packaging before searching — a bracketed group goes only
+  if it mentions packaging *and* names no distinct recording, matched on
+  *contains* because `(Official 4K Music Video)` interleaves the two. Live, Remix,
+  Acoustic, Cover, Instrumental all survive: they should steer the match.
+- **Awaited, not backfilled**, so the *first* embed is already right. It fits:
+  warm lookups are 400-670ms against `/play`'s 2000ms acknowledge budget
+  (measured 840-1552ms end to end). A 1200ms deadline bounds it, and a miss just
+  keeps the YouTube thumbnail.
+- **`warmToken()` runs at boot** (`index.js`, not awaited). Without it the first
+  artwork lookup also mints the OAuth token — measured **2115ms**, which overruns
+  the budget and costs the user a second round-trip on the first play after every
+  restart.
+- **Timeouts are not cached, genuine misses are.** A title Spotify doesn't know is
+  remembered as null; a timeout says nothing about the track, and caching the
+  cold-start one would blank that cover permanently.
+- **Playlists are skipped on purpose** — 100 items would mean 100 lookups for art
+  nobody has looked at yet.
 
 ## Database (`src/db/`)
 - **Drizzle ORM** over `@libsql/client` for both environments. `client.js` = init + client pick; `schema.js` = drizzle table def (source of truth); `migrations/` = drizzle-kit output, applied on boot via `migrate()` (`drizzle-orm/libsql/migrator`). song_history queries live in `src/discord/services/trackService.js` (the one query module — it stays with the domain, not in `db/`) (`saveSong`/`getHistory`/`getRecentSongs`/`getSongMeta`).

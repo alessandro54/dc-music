@@ -10,6 +10,7 @@ import { log } from "@/lib/logger.js";
 // before any of the code below can throw.
 import { captureError } from "@/lib/sentry.js";
 import { queues, setClient } from "@/discord/services/playbackService.js";
+import { warmToken } from "@/discord/services/spotifyService.js";
 import { shutdownStreams } from "@/discord/services/ytdlpService.js";
 
 process.on("unhandledRejection", (err) => {
@@ -71,6 +72,11 @@ for (const event of [guildMemberAdd, interactionCreate, ready]) {
 }
 
 setClient(client);
+
+// Not awaited, and a failure is fine: without Spotify the bot simply falls back
+// to YouTube thumbnails. This only removes the token fetch from the first
+// artwork lookup's critical path.
+warmToken().catch((err) => log.warn(`spotify token warm-up failed: ${err.message}`));
 
 client.login(Deno.env.get("BOT_TOKEN"));
 
