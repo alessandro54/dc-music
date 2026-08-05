@@ -157,6 +157,15 @@ flowchart TD
 Keeping `YOUTUBE_COOKIES` set is what makes the fallback meaningful, even once
 the proxy path stops needing it day to day.
 
+**Cookies are deliberately omitted while the proxy is healthy.** Sending them
+through the proxy is just as slow as sending them direct, so leaving them on
+would make `YTDLP_PROXY` pointless. They return the instant anything falls back.
+
+**The fast path is ~95% reliable** (18 of 19 measured), and a stream has no
+retry of its own — so a stalled stream forces the direct, cookie-authenticated
+path and replays the same track once before giving up on it. A second stall is
+treated as a genuinely bad track.
+
 ## Known sharp edges
 
 - **PO tokens are minted from the host IP while media is fetched through WARP.**

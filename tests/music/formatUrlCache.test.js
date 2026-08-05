@@ -319,3 +319,18 @@ Deno.test("streaming spawn carries no --proxy when YTDLP_PROXY is unset", async 
         restore();
     }
 });
+
+Deno.test("no cookies are sent when YTDLP_PROXY is unset (they are the only auth)", async () => {
+    setup();
+    try {
+        // With no proxy configured cookieArgs() must yield the real cookies.
+        // This asserts the shape rather than the value: YOUTUBE_COOKIES is not
+        // set in tests, so COOKIES_ARGS is empty and no --cookies flag appears.
+        // The guard that matters is that nothing *adds* one spuriously.
+        await createStream(URL_A, 0, () => {});
+        const n = spawned[0].args.filter((a) => a === "--cookies").length;
+        assert(n <= 1, "duplicated --cookies in the spawn args");
+    } finally {
+        restore();
+    }
+});

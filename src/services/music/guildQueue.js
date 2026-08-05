@@ -8,7 +8,7 @@ import { TIMEOUTS } from "../../lib/constants.js";
 import { saveSong } from "../../lib/db.js";
 import { log } from "../../lib/logger.js";
 import { captureError, captureWarn } from "../../lib/sentry.js";
-import { createStream, destroyResource, prefetchFormatUrl, searchVideo } from "./stream.js";
+import { createStream, destroyResource, forceDirectStreams, prefetchFormatUrl, searchVideo } from "./stream.js";
 
 export const queues = new Map();
 
@@ -39,6 +39,7 @@ export class GuildQueue {
         this.seekOffset = 0;
         this._streamStartedAt = null;
         this._prefetching = false;
+        this._stallRetried = false;
 
         // Stall watchdog: yt-dlp can be slow to first byte (or hang silently) on
         // a datacenter IP, leaving the player stuck in Buffering with no error and
@@ -46,10 +47,27 @@ export class GuildQueue {
         this.player.on(AudioPlayerStatus.Buffering, () => {
             clearTimeout(this._stallTimeout);
             this._stallTimeout = setTimeout(() => {
+                // The fast path (proxy, no cookies) is ~95% reliable — measured
+                // 18 of 19 — and a stream has no retry of its own, so the 1 in
+                // 20 would die silently. Before giving up on the track, force
+                // the slow-but-authenticated path and play it again. Only once:
+                // a second stall is a genuinely bad track, not a flaky path.
+                if (!this._stallRetried && forceDirectStreams()) {
+                    this._stallRetried = true;
+                    log.warn(`[Queue ${this.guildId}] Stream stalled — retrying ${this.current?.title} with cookies`);
+                    this._killStream();
+                    this._playNext();
+                    return;
+                }
                 log.error(`[Queue ${this.guildId}] Stream stalled (buffering > ${TIMEOUTS.STREAM_STALL_MS}ms), skipping`);
                 captureWarn("Stream stalled while buffering", {
                     tags: { stage: "stall", guild: this.guildId },
-                    extra: { title: this.current?.title, url: this.current?.url, stallMs: TIMEOUTS.STREAM_STALL_MS },
+                    extra: {
+                        title: this.current?.title,
+                        url: this.current?.url,
+                        stallMs: TIMEOUTS.STREAM_STALL_MS,
+                        retried: this._stallRetried,
+                    },
                 });
                 this.player.stop(); // → Idle → advance
             }, TIMEOUTS.STREAM_STALL_MS);
@@ -60,6 +78,7 @@ export class GuildQueue {
             // `spawn` only covers forking yt-dlp; the extraction that follows
             // (player JS, nsig, PO token, first bytes) is the real cost and was
             // previously invisible.
+            this._stallRetried = false;
             if (this._streamStartedAt !== null) {
                 log.music(log.gray(`audio in ${Math.round(performance.now() - this._streamStartedAt)}ms`));
                 this._streamStartedAt = null;
@@ -71,6 +90,7 @@ export class GuildQueue {
             clearTimeout(this._stallTimeout);
             this._killStream();
             this.seekOffset = 0;
+            this._stallRetried = false;
             this.songs.shift();
             if (this.songs.length > 0) {
                 this._playNext();

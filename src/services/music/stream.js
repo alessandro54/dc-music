@@ -93,6 +93,18 @@ function proxyArgs() {
     return ["--proxy", PROXY];
 }
 
+// Cookies are the ~6s tax: an authenticated session makes YouTube demand the
+// full player-JS + nsig chain on every play. Measured across 12 videos, the
+// proxy path needs no cookies at all (12/12 with the PO token). So while the
+// proxy is healthy we deliberately omit them — sending cookies through the
+// proxy is just as slow as sending them direct, which would make YTDLP_PROXY
+// pointless. They come back the moment we fall back to a direct call, which is
+// what keeps YOUTUBE_COOKIES worth having.
+function cookieArgs() {
+    if (PROXY && Date.now() >= proxyDisabledUntil) return [];
+    return COOKIES_ARGS;
+}
+
 function markProxyBad(reason) {
     if (!PROXY || Date.now() < proxyDisabledUntil) return;
     proxyDisabledUntil = Date.now() + PROXY_COOLDOWN_MS;
@@ -165,7 +177,14 @@ async function runYtdlp(args, { timeoutMs, what }) {
     // proxy from taking playback down with it.
     if (viaProxy.length && res.code !== 0) {
         markProxyBad(`${what} exited ${res.code}`);
-        return _runYtdlpOnce(args, { timeoutMs, what });
+        // args were built while the proxy was healthy, so cookieArgs() gave
+        // nothing. The direct path is the authenticated one — put them back,
+        // otherwise the fallback is strictly weaker than the attempt it
+        // replaces and YOUTUBE_COOKIES never does anything.
+        const withCookies = COOKIES_ARGS.length && !args.includes("--cookies")
+            ? [...COOKIES_ARGS, ...args]
+            : args;
+        return _runYtdlpOnce(withCookies, { timeoutMs, what });
     }
     return res;
 }
@@ -185,6 +204,16 @@ async function _runYtdlpOnce(args, { timeoutMs, what }) {
     } finally {
         clearTimeout(timer);
     }
+}
+
+// Force the direct, cookie-authenticated path for a while. Called when a
+// stream produced no audio: the fast path is flaky at the margins and a
+// stalled track has no retry of its own. Returns false when there is nothing
+// to fall back from, so callers can skip the retry entirely.
+export function forceDirectStreams() {
+    if (!PROXY) return false;
+    markProxyBad("stream produced no audio");
+    return true;
 }
 
 // Kill everything this module owns. Called from the shutdown path so a redeploy
@@ -412,7 +441,7 @@ const PLAYLIST_TIMEOUT_MS = 60_000;
 async function _dumpJson(url, videoId, extraArgs) {
     const { code, stdout, stderr } = await runYtdlp([
         "--no-playlist", "--dump-json", "--quiet", "--no-warnings", "--skip-download",
-        ...COOKIES_ARGS, ...CACHE_ARGS, ...extraArgs,
+        ...cookieArgs(), ...CACHE_ARGS, ...extraArgs,
         url,
     ], { timeoutMs: METADATA_TIMEOUT_MS, what: "yt-dlp metadata" });
     const out = dec.decode(stdout).trim();
@@ -441,7 +470,7 @@ export async function searchVideo(query) {
 
 export async function fetchPlaylistItems(url, limit) {
     const { code, stdout, stderr } = await runYtdlp([
-        "--flat-playlist", "--dump-json", "--quiet", "--no-warnings", ...COOKIES_ARGS, ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS,
+        "--flat-playlist", "--dump-json", "--quiet", "--no-warnings", ...cookieArgs(), ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS,
         "--playlist-end", String(limit),
         url,
     ], { timeoutMs: PLAYLIST_TIMEOUT_MS, what: "yt-dlp playlist" });
@@ -549,7 +578,7 @@ export async function prefetchFormatUrl(url) {
                 ...proxyArgs(),
                 "--no-playlist", "-o", "-", "--quiet", "--no-warnings", "--no-check-formats",
                 "--socket-timeout", "15",
-                ...COOKIES_ARGS, ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
+                ...cookieArgs(), ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
                 "-f", AUDIO_FMT,
                 "--print-to-file", "%(duration)s\n%(urls)s", sidecar,
                 url,
@@ -737,7 +766,7 @@ function _ytdlpStream(url, seekSeconds, onDuration = null) {
         "--retries", "5", "--fragment-retries", "5", "--extractor-retries", "3",
         // Fail a dead/stalled connection fast instead of hanging the stream.
         "--socket-timeout", "15",
-        ...COOKIES_ARGS, ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
+        ...cookieArgs(), ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
     ];
 
     if (seekSeconds > 0) {
