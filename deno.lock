@@ -12,8 +12,6 @@
     "npm:drizzle-orm@0.44": "0.44.7_@libsql+client@0.15.15",
     "npm:opusscript@~0.1.1": "0.1.1",
     "npm:pngjs@7": "7.0.0",
-    "npm:tweetnacl@*": "1.0.3",
-    "npm:tweetnacl@^1.0.3": "1.0.3",
     "npm:youtubei.js@17": "17.0.1"
   },
   "jsr": {
@@ -1172,9 +1170,6 @@
       ],
       "bin": true
     },
-    "tweetnacl@1.0.3": {
-      "integrity": "sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw=="
-    },
     "typedarray@0.0.6": {
       "integrity": "sha512-/aCDEGatGvZ2BIk+HmLf4ifCJFwvKFNb9/JeZPMulfgFracn9QFcAf5GO8B/mweUjSoblS5In0cWhqpfs/5PQA=="
     },
@@ -1208,7 +1203,6 @@
       "npm:drizzle-orm@0.44",
       "npm:opusscript@~0.1.1",
       "npm:pngjs@7",
-      "npm:tweetnacl@^1.0.3",
       "npm:youtubei.js@17"
     ]
   }
