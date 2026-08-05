@@ -494,7 +494,11 @@ export async function prefetchFormatUrl(url) {
         Deno.removeSync(sidecar);
     } catch { /* no leftover */ }
 
-    // stdout is discarded: this run exists only to resolve a usable URL.
+    // stdout is piped, not discarded, and a little of it is actually read
+    // before the kill. Measured: a URL captured from a run that was killed the
+    // moment the sidecar appeared still 403s — the sidecar is written when the
+    // info dict is ready, before the media request happens, so the URL was
+    // never exercised. Pulling a few KB first yields a URL that fetches 200.
     const proc = track(
         new Deno.Command(YTDLP, {
             args: [
@@ -505,10 +509,33 @@ export async function prefetchFormatUrl(url) {
                 "--print-to-file", "%(duration)s\n%(urls)s", sidecar,
                 url,
             ],
-            stdout: "null",
+            stdout: "piped",
             stderr: "null",
         }).spawn(),
     );
+
+    // Drain a little audio so the media URL is genuinely exercised, then stop.
+    const PREFETCH_WARM_BYTES = 32 * 1024;
+    const warmed = (async () => {
+        let got = 0;
+        try {
+            for await (const chunk of proc.stdout) {
+                got += chunk.length;
+                if (got >= PREFETCH_WARM_BYTES) break;
+            }
+        } catch { /* killed or closed — nothing to salvage */ }
+        return got;
+    })();
+
+    // A dead extractor (private/unavailable video) writes no sidecar, so
+    // without this the loop would poll out the full timeout — 30s of a
+    // prefetch slot held for a track that was never going to resolve.
+    let exited = false;
+    proc.status.then(() => {
+        exited = true;
+    }).catch(() => {
+        exited = true;
+    });
 
     const deadline = Date.now() + PREFETCH_TIMEOUT_MS;
     try {
@@ -518,11 +545,27 @@ export async function prefetchFormatUrl(url) {
             try {
                 lines = (await Deno.readTextFile(sidecar)).trim().split("\n");
             } catch {
+                // Check *after* the read: yt-dlp may have written the sidecar
+                // and exited between ticks.
+                if (exited) return false;
                 await sleep(PREFETCH_POLL_MS, _shutdownAC.signal).catch(() => {});
                 continue;
             }
             const mediaUrl = lines[1];
-            if (!mediaUrl?.startsWith("http")) return false;
+            // The file can exist with only the duration line flushed. Keep
+            // polling instead of giving up — treating a half-written sidecar as
+            // failure is why prefetch silently never worked in production.
+            if (!mediaUrl?.startsWith("http")) {
+                if (exited) return false;
+                await sleep(PREFETCH_POLL_MS, _shutdownAC.signal).catch(() => {});
+                continue;
+            }
+            // Wait for the warm-up read: caching before the URL has served a
+            // byte is what produced 403s on the next play.
+            if (await warmed === 0 && !exited) {
+                log.warn(`[stream] prefetch for ${videoId} resolved a URL that served no data`);
+                return false;
+            }
             cacheFormatUrl(videoId, mediaUrl);
             return cachedFormatUrl(videoId) !== null;
         }

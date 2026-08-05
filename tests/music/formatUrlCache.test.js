@@ -27,6 +27,11 @@ let ytdlpStdout = "";
 // What the spawned "yt-dlp" writes to its --print-to-file sidecar, mimicking a
 // real download run resolving a media URL. null = never writes one.
 let sidecarBody = null;
+// When true the fake process exits on its own, as a failed extraction does.
+let exitImmediately = false;
+// How many bytes the fake yt-dlp emits on stdout. 0 = resolved a URL that
+// serves nothing, which must not be cached.
+let emitBytes = 64 * 1024;
 
 class FakeCommand {
     constructor(cmd, opts) {
@@ -45,18 +50,27 @@ class FakeCommand {
         // A streaming yt-dlp runs until killed — status settles only on kill,
         // which is what lets reap() complete.
         let settle;
-        const status = new Promise((r) => {
-            settle = r;
-        });
+        const status = exitImmediately
+            ? Promise.resolve({ success: false, code: 1, signal: null })
+            : new Promise((r) => {
+                settle = r;
+            });
         return {
-            stdout: new ReadableStream({ start: (c) => c.close() }),
+            // A real download run emits audio; prefetch reads a little of it to
+            // confirm the media URL actually serves before caching it.
+            stdout: new ReadableStream({
+                start(c) {
+                    if (emitBytes) c.enqueue(new Uint8Array(emitBytes));
+                    c.close();
+                },
+            }),
             stdin: new WritableStream(),
             stderr: (async function* () {})(),
             status,
             output: () => Promise.resolve(this._payload()),
             kill(signal) {
                 record.signals.push(signal);
-                settle({ success: false, code: null, signal });
+                settle?.({ success: false, code: null, signal });
             },
         };
     }
@@ -72,6 +86,8 @@ function setup() {
     spawned = [];
     ytdlpStdout = "";
     sidecarBody = null;
+    exitImmediately = false;
+    emitBytes = 64 * 1024;
     _resetShutdownForTests();
     Deno.Command = FakeCommand;
 }
@@ -118,6 +134,55 @@ Deno.test("prefetch is skipped when the URL is already cached", async () => {
         const after = spawned.length;
         assertEquals(await prefetchFormatUrl(URL_A), false);
         assertEquals(spawned.length, after, "second prefetch spawned yt-dlp anyway");
+    } finally {
+        restore();
+    }
+});
+
+Deno.test("prefetch gives up as soon as a dead extractor exits", async () => {
+    setup();
+    try {
+        // No sidecar is ever written — an unavailable video behaves this way.
+        // Caught live: the loop used to poll out its full 30s timeout.
+        sidecarBody = null;
+        exitImmediately = true;
+        const started = performance.now();
+        assertEquals(await prefetchFormatUrl(URL_A), false);
+        const ms = performance.now() - started;
+        assert(ms < 3000, `waited ${Math.round(ms)}ms for a process that had already exited`);
+    } finally {
+        restore();
+    }
+});
+
+Deno.test("prefetch keeps polling a half-written sidecar", async () => {
+    setup();
+    try {
+        // yt-dlp flushes the duration line before the URL line. Production hit
+        // exactly this: the first read saw only line 1, prefetch returned false,
+        // and it silently never worked once.
+        sidecarBody = "213\n";
+        const done = prefetchFormatUrl(URL_A);
+        await new Promise((r) => setTimeout(r, 400));
+        // ...then the URL line lands.
+        Deno.writeTextFileSync(PREFETCH_SIDECAR, `213\n${mediaUrl()}\n`);
+        assertEquals(await done, true, "gave up on a sidecar that was still being written");
+        assertEquals(_formatUrlCacheForTests().size, 1);
+    } finally {
+        restore();
+    }
+});
+
+Deno.test("a prefetched URL that serves no data is not cached", async () => {
+    setup();
+    try {
+        // Caught live on prod: killing the run as soon as the sidecar appears
+        // captured a URL that had never served a byte, and it 403'd on the next
+        // play. The URL must prove itself before being cached.
+        armPrefetch();
+        emitBytes = 0;
+        assertEquals(await prefetchFormatUrl(URL_A), false);
+        assertEquals(_formatUrlCacheForTests().size, 0, "cached a URL that served nothing");
     } finally {
         restore();
     }
