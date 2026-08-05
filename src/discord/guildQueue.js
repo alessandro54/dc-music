@@ -227,6 +227,7 @@ export class GuildQueue {
                 url: song.url,
                 duration: song.duration,
                 viaPlaylist: song.viaPlaylist,
+                source: song.source,
             });
         } catch (err) {
             log.error(`[Queue ${this.guildId}] Stream: ${err.message}`);

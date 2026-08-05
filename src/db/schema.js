@@ -18,6 +18,11 @@ export const songHistory = sqliteTable("song_history", {
     // they were played — but they're filler in the "recently played" lists, where
     // one 100-track playlist would bury every deliberate pick.
     viaPlaylist: integer("via_playlist", { mode: "boolean" }),
+    // Which resolver the request came from: "youtube" | "spotify" | "soundcloud".
+    // Provenance, not where the audio came from — a Spotify request is resolved to
+    // a YouTube video at play time, so it lands here as "spotify" while `url` is a
+    // youtube.com link. That's exactly why this can't be derived from the url.
+    source: text("source"),
     duration: text("duration"),
     playedAt: text("played_at").default(sql`CURRENT_TIMESTAMP`),
 }, (t) => [

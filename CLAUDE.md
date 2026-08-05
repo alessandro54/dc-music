@@ -319,6 +319,12 @@ credentials are already there. Spotify-sourced songs carry their art already;
   running, verified mid-flight. The UPDATEs are batched 100 at a time because on Turso each `execute()` is
   its own HTTP round-trip; 120 legacy urls became 2 requests instead of 120. A failure only logs: the
   coalesce keeps results right, and the next boot retries.
+- **Every row records its `source`** (migration 0003): `"youtube"` | `"spotify"` | `"soundcloud"`. Stamped
+  centrally in `resolvers/index.js` from the resolver's own `name`, so a new source is labelled without
+  touching that code. It is **provenance, not where the audio came from** — a Spotify request stays
+  `"spotify"` even though `_playNext` resolves it to a YouTube video to play, which is precisely why it
+  can't be read back off the `url`. Legacy rows are backfilled from the url, so a pre-0003 Spotify request
+  reads as `"youtube"`: its origin was never recorded and is unknowable now.
 - **Playlist tracks are plays, not picks.** Every row carries `via_playlist` (migration 0002), set by the
   resolvers on playlist/album/set branches and carried through `_playNext` into history. `/history` and
   the `/play` autocomplete suggestions filter it out (`CHOSEN` in trackService) — otherwise one 100-track

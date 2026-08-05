@@ -14,7 +14,7 @@ const FINGERPRINT = sql`coalesce(${songHistory.fingerprint}, ${songHistory.url})
 // written before the column exists are NULL, which `is not 1` treats as a pick.
 const CHOSEN = sql`${songHistory.viaPlaylist} is not 1`;
 
-export async function saveSong({ guildId, userId, userTag, title, url, duration, viaPlaylist }) {
+export async function saveSong({ guildId, userId, userTag, title, url, duration, viaPlaylist, source }) {
     const db = getDb();
     if (!db) return;
     // Resolvers canonicalise too, but history is the one place where a stray URL
@@ -32,7 +32,7 @@ export async function saveSong({ guildId, userId, userTag, title, url, duration,
         // placeholder) never equals itself, so `=` would dedup nothing.
         await db.run(sql`
             insert into song_history
-                (guild_id, user_id, user_tag, title, url, fingerprint, duration, via_playlist)
+                (guild_id, user_id, user_tag, title, url, fingerprint, duration, via_playlist, source)
             select
                 ${guildId ?? null},
                 ${userId ?? null},
@@ -41,7 +41,8 @@ export async function saveSong({ guildId, userId, userTag, title, url, duration,
                 ${url ?? null},
                 ${fingerprint},
                 ${duration == null ? null : String(duration)},
-                ${viaPlaylist ? 1 : 0}
+                ${viaPlaylist ? 1 : 0},
+                ${source ?? null}
             where not exists (
                 select 1 from song_history
                 where guild_id is ${guildId ?? null}
