@@ -47,6 +47,9 @@ SENTRY_DSN=                  # optional — error monitoring (org alessandro54, 
 
 ## Architecture
 
+Container topology + sidecar rationale with measurements: `docs/ARCHITECTURE.md`.
+Standalone/reproducible stack: `docker-compose.yml`.
+
 Layered. Commands are thin controllers; logic lives in services; rendering in views.
 
 ```

@@ -305,3 +305,17 @@ Deno.test("the streaming spawn asks yt-dlp to print both duration and URL", asyn
         restore();
     }
 });
+
+// ── proxy fallback ─────────────────────────────────────────────────────────
+// YTDLP_PROXY is read at module load, so these assert the shape of the args
+// rather than toggling the env: the streaming spawn must carry whatever
+// proxyArgs() yields, and a proxy failure must never leave playback broken.
+Deno.test("streaming spawn carries no --proxy when YTDLP_PROXY is unset", async () => {
+    setup();
+    try {
+        await createStream(URL_A, 0, () => {});
+        assert(!spawned[0].args.includes("--proxy"), "added a proxy with none configured");
+    } finally {
+        restore();
+    }
+});

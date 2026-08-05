@@ -187,6 +187,10 @@ so a regression shows up as a number rather than a hunch.
 
 ## Architecture
 
+Container topology, sidecars, and the measurements behind them:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Standalone deployment:
+[`docker-compose.yml`](docker-compose.yml).
+
 Layered — commands are thin controllers; logic lives in services, rendering in views.
 
 ```

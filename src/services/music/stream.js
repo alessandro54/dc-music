@@ -72,6 +72,35 @@ const EJS_ARGS = [];
 //   the player + gvs tokens.
 const CLIENT_ARGS = ["--extractor-args", "youtube:fetch_pot=always"];
 
+// Route yt-dlp through a proxy (the WARP sidecar) when YTDLP_PROXY is set.
+// This datacenter IP is flagged, which is what makes a cold play expensive:
+// YouTube serves a flagged IP no formats at all unless the full anti-bot chain
+// runs (watch page → PO token → player JS → nsig solve ≈ 3.7s), and then the
+// CDN is slow to first byte. Measured from the same host through WARP, with no
+// cookies and no PO token: 1.6-2.1s to first audio versus 7.3s direct.
+//
+// Unset = direct, exactly as before.
+const PROXY = Deno.env.get("YTDLP_PROXY");
+
+// A proxy that breaks must never mean no music. On any proxied failure we fall
+// back to a direct call and stop using the proxy for a while — cookies and the
+// PO token still work, they are just slower.
+const PROXY_COOLDOWN_MS = 5 * 60 * 1000;
+let proxyDisabledUntil = 0;
+
+function proxyArgs() {
+    if (!PROXY || Date.now() < proxyDisabledUntil) return [];
+    return ["--proxy", PROXY];
+}
+
+function markProxyBad(reason) {
+    if (!PROXY || Date.now() < proxyDisabledUntil) return;
+    proxyDisabledUntil = Date.now() + PROXY_COOLDOWN_MS;
+    log.warn(`[stream] proxy failed (${reason}) — going direct for ${PROXY_COOLDOWN_MS / 60000}min`);
+}
+
+if (PROXY) log.info(`[stream] yt-dlp proxy → ${PROXY}`);
+
 const AUDIO_FMT = "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=opus]/bestaudio";
 const dec = new TextDecoder();
 
@@ -128,6 +157,20 @@ const sleep = (ms, signal) =>
 // on timeout it gets killed and reaped rather than left running with a pipe
 // nobody reads.
 async function runYtdlp(args, { timeoutMs, what }) {
+    const viaProxy = proxyArgs();
+    const res = await _runYtdlpOnce([...viaProxy, ...args], { timeoutMs, what });
+    // A non-zero exit through the proxy is indistinguishable here from a video
+    // that is genuinely unavailable, so retry direct and let the caller judge
+    // the second result. Costs one extra call on a real failure; keeps a broken
+    // proxy from taking playback down with it.
+    if (viaProxy.length && res.code !== 0) {
+        markProxyBad(`${what} exited ${res.code}`);
+        return _runYtdlpOnce(args, { timeoutMs, what });
+    }
+    return res;
+}
+
+async function _runYtdlpOnce(args, { timeoutMs, what }) {
     const proc = track(new Deno.Command(YTDLP, { args, stdout: "piped", stderr: "piped" }).spawn());
     let timer;
     const deadline = new Promise((_, rej) => {
@@ -137,6 +180,7 @@ async function runYtdlp(args, { timeoutMs, what }) {
         return await Promise.race([proc.output(), deadline]);
     } catch (err) {
         await reap(proc);
+        if (args.includes("--proxy")) markProxyBad(err.message);
         throw err;
     } finally {
         clearTimeout(timer);
@@ -502,6 +546,7 @@ export async function prefetchFormatUrl(url) {
     const proc = track(
         new Deno.Command(YTDLP, {
             args: [
+                ...proxyArgs(),
                 "--no-playlist", "-o", "-", "--quiet", "--no-warnings", "--no-check-formats",
                 "--socket-timeout", "15",
                 ...COOKIES_ARGS, ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
@@ -685,6 +730,7 @@ function _ytdlpStream(url, seekSeconds, onDuration = null) {
     }
 
     const args = [
+        ...proxyArgs(),
         "--no-playlist", "-o", "-", "--quiet", "--no-warnings", "--no-check-formats",
         // Transient googlevideo 403s: retry the download and re-run the
         // extractor (fresh media URL) before giving up on the track.
@@ -709,6 +755,7 @@ function _ytdlpStream(url, seekSeconds, onDuration = null) {
 
     args.push(url);
 
+    const usedProxy = args.includes("--proxy");
     const ytdlp = track(new Deno.Command(YTDLP, { args, stdout: "piped", stderr: "piped" }).spawn());
     // Let a queued duration backfill know a streaming extraction just started,
     // so it doesn't compete with it for CPU while the user waits for audio.
@@ -737,6 +784,9 @@ function _ytdlpStream(url, seekSeconds, onDuration = null) {
         const status = await ytdlp.status.catch(() => null);
         // A signal means we killed it (skip/stop/seek) — expected, not an error.
         if (!status || status.success || status.signal) return;
+        // This stream is already lost (the watchdog will skip it), but the next
+        // track can avoid the same fate.
+        if (usedProxy) markProxyBad(`stream exited ${status.code}`);
         captureError(new Error(`yt-dlp exited ${status.code}: ${tail[tail.length - 1] ?? "no stderr"}`), {
             tags: { stage: "ytdlp", exitCode: String(status.code) },
             extra: { url, seekSeconds, stderr: tail.join("\n") },

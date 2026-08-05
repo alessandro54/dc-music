@@ -1,0 +1,100 @@
+# Standalone deployment — the whole stack on one box, no Dokku.
+#
+# Production runs on Dokku, where these three containers are wired by hand
+# (see docs/DEPLOY.md). This file is the same topology in one place: useful for
+# a fresh box, and as the executable record of how the sidecars are configured.
+#
+#   cp .env.example .env   # fill in BOT_TOKEN, CLIENT_ID, GUILD_ID, …
+#   docker compose up -d
+#
+# Architecture and the measurements behind it: docs/ARCHITECTURE.md
+
+name: music-bot
+
+services:
+  bot:
+    # Built by CI on a native arm64 runner. Swap for `build: .` to build here.
+    image: ghcr.io/alessandro54/discord-music:latest
+    container_name: music-bot
+    restart: unless-stopped
+    depends_on:
+      warp:
+        condition: service_healthy
+      bgutil:
+        condition: service_started
+    environment:
+      # Discord — the code logs in with BOT_TOKEN (not DISCORD_TOKEN).
+      BOT_TOKEN: ${BOT_TOKEN:?set BOT_TOKEN in .env}
+      CLIENT_ID: ${CLIENT_ID:?set CLIENT_ID in .env}
+      GUILD_ID: ${GUILD_ID:?set GUILD_ID in .env}
+      OWNER_ID: ${OWNER_ID:-}
+
+      # Database. Turso if set, else SQLite at DB_URL (default ./bot.db).
+      TURSO_DATABASE_URL: ${TURSO_DATABASE_URL:-}
+      TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN:-}
+      DB_URL: ${DB_URL:-}
+
+      # Spotify link resolution (optional).
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      SPOTIFY_REFRESH_TOKEN: ${SPOTIFY_REFRESH_TOKEN:-}
+
+      # Sidecars. Both are optional — unset either one and yt-dlp simply does
+      # without it, more slowly or less reliably. See docs/ARCHITECTURE.md.
+      YTDLP_POT_BASE_URL: http://bgutil:4416
+      YTDLP_PROXY: socks5://warp:1080
+
+      # Fallback for when the proxy is unavailable: cookies still work, they
+      # are just ~6s slower per cold play. Netscape format, full file contents.
+      YOUTUBE_COOKIES: ${YOUTUBE_COOKIES:-}
+
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      NODE_ENV: production
+    volumes:
+      # yt-dlp's player/signature cache. Without a real volume this is wiped on
+      # every redeploy and each release starts cold.
+      - ytdlp-cache:/data/ytdlp-cache
+    ports:
+      - "${SERVER_PORT:-3000}:3000"
+
+  # Mints PO tokens (BotGuard attestation). Cheap — ~13ms per token — and it is
+  # what makes the no-cookie path reliable: 3/4 videos without it, 12/12 with.
+  bgutil:
+    image: brainicism/bgutil-ytdlp-pot-provider:1.3.1
+    container_name: bgutil-provider
+    restart: unless-stopped
+
+  # Cloudflare WARP as a SOCKS5 proxy, so yt-dlp egresses from a clean IP.
+  # This is what lets cookies be dropped, which is the ~6s saving — the cookies
+  # are the cost, not the IP itself.
+  #
+  # NET_ADMIN and the /dev/net/tun rule are required: WARP builds a WireGuard
+  # tunnel. The proxy is never published to the host.
+  warp:
+    image: caomingjun/warp:latest
+    container_name: warp
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    device_cgroup_rules:
+      - "c 10:200 rwm"
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 0
+      net.ipv4.conf.all.src_valid_mark: 1
+    volumes:
+      - warp-data:/var/lib/cloudflare-warp
+    healthcheck:
+      # Registration takes a few seconds; the bot waits for warp=on rather than
+      # racing it and falling back to the slow path on every restart.
+      test: ["CMD-SHELL", "curl -fsS --max-time 5 --socks5-hostname 127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace | grep -q 'warp=on'"]
+      interval: 10s
+      timeout: 8s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  ytdlp-cache:
+  warp-data:
+
+# All three share compose's default network, so `bgutil` and `warp` resolve by
+# service name. On Dokku the equivalent is the `ytpot` network — see DEPLOY.md.

@@ -283,6 +283,40 @@ sudo dokku enter music-bot web /opt/ytdlp/bin/yt-dlp \
 ```
 Prints the title = the full chain works.
 
+### Sidecars
+`bgutil-provider` (PO tokens) and `warp` (clean egress IP) both run as plain
+containers on the `ytpot` network. What each buys, with measurements, and the
+failure modes: [`ARCHITECTURE.md`](ARCHITECTURE.md). For a from-scratch box the
+whole topology is in [`docker-compose.yml`](../docker-compose.yml).
+
+```bash
+# PO-token provider — makes the no-cookie path reliable (3/4 → 12/12 videos)
+sudo docker run -d --name bgutil-provider --restart=unless-stopped \
+  --network ytpot brainicism/bgutil-ytdlp-pot-provider:1.3.1
+
+# WARP SOCKS5 proxy — clean egress IP, which is what lets cookies be dropped
+# (~6s per cold play). NET_ADMIN + the tun device rule are required.
+sudo docker run -d --name warp --restart=unless-stopped --network ytpot \
+  --cap-add NET_ADMIN --device-cgroup-rule='c 10:200 rwm' \
+  --sysctl net.ipv6.conf.all.disable_ipv6=0 \
+  --sysctl net.ipv4.conf.all.src_valid_mark=1 \
+  caomingjun/warp:latest
+
+# point the bot at them
+sudo dokku config:set music-bot \
+  YTDLP_POT_BASE_URL=http://bgutil-provider:4416 \
+  YTDLP_PROXY=socks5://warp:1080
+```
+
+Verify WARP is up and egressing elsewhere:
+```bash
+sudo docker exec music-bot.web.1 curl -s --socks5-hostname warp:1080 https://api.ipify.org
+sudo docker exec music-bot.web.1 curl -s https://api.ipify.org   # should differ
+```
+
+Keep `YOUTUBE_COOKIES` set even once the proxy path no longer needs it — it is
+the fallback when WARP is down.
+
 ### yt-dlp cache volume
 `/data/ytdlp-cache` is bind-mounted so the player JS and signature caches survive
 a redeploy (the container filesystem does not):
