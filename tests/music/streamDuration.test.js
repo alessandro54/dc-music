@@ -2,15 +2,14 @@
 // the streaming spawn writes `%(duration)s` to a sidecar file, and backfill
 // only spawns when nothing cheaper has filled the duration in.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { backfillDuration, fetchPlaylistItems } from "@/discord/services/metadataService.js";
 import {
     _awaitFirstByte,
     _resetShutdownForTests,
-    backfillDuration,
     createStream,
     destroyResource,
-    fetchPlaylistItems,
-    shutdownStreams,
-} from "../../src/services/music/stream.js";
+} from "@/discord/services/streamService.js";
+import { shutdownStreams } from "@/discord/services/ytdlpService.js";
 
 const URL_A = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 const VIDEO_ID = "dQw4w9WgXcQ";
@@ -133,7 +132,10 @@ Deno.test("createStream reports the duration the streaming extraction printed", 
         assert(await waitFor(() => reported !== null), "duration callback never fired");
         assertEquals(reported, "3:33");
         // The sidecar is consumed, not left in /tmp for the next play to re-read.
-        assert(await waitFor(async () => !(await Deno.stat(SIDECAR).catch(() => null))), "sidecar file was not cleaned up");
+        assert(
+            await waitFor(async () => !(await Deno.stat(SIDECAR).catch(() => null))),
+            "sidecar file was not cleaned up",
+        );
     } finally {
         restore();
     }
@@ -281,7 +283,11 @@ Deno.test("backfillDuration keeps clear of the streaming spawn", async () => {
         // ...and once the duration arrives for free, the backfill drops entirely.
         song.duration = "2:05";
         await done;
-        assertEquals(spawned.length, spawnsAfterStream, "backfill spawned despite the duration arriving first");
+        assertEquals(
+            spawned.length,
+            spawnsAfterStream,
+            "backfill spawned despite the duration arriving first",
+        );
     } finally {
         restore();
     }

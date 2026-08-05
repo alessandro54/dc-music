@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/deno";
-import { COMMIT } from "./buildInfo.js";
-import { log } from "./logger.js";
+import { COMMIT } from "@/lib/buildInfo.js";
+import { log } from "@/lib/logger.js";
 
 const DSN = Deno.env.get("SENTRY_DSN");
 export const sentryEnabled = Boolean(DSN);
@@ -13,8 +13,7 @@ const ENVIRONMENT = Deno.env.get("SENTRY_ENVIRONMENT") ??
 
 // Expected teardown noise, not incidents: _killStream SIGTERMs yt-dlp/ffmpeg on
 // every skip/stop/seek, so the piped streams always die mid-write by design.
-const TEARDOWN_RE =
-    /premature close|broken pipe|abort|resource closed|connection reset|epipe|stream closed/i;
+const TEARDOWN_RE = /premature close|broken pipe|abort|resource closed|connection reset|epipe|stream closed/i;
 
 // Discord interaction tokens expire after 3s and can't be acked twice. Both are
 // latency artifacts the user already sees — they don't need a Sentry issue.

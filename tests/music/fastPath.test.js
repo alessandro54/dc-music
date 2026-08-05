@@ -8,7 +8,7 @@ import { assert, assertEquals } from "@std/assert";
 Deno.env.set("YTDLP_PROXY", "socks5://warp:1080");
 Deno.env.set("YOUTUBE_COOKIES", "# Netscape HTTP Cookie File\n");
 
-const { createStream, _resetShutdownForTests } = await import("../../src/services/music/stream.js");
+const { createStream, _resetShutdownForTests } = await import("@/discord/services/streamService.js");
 
 const URL_A = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 const SIDECAR = `/tmp/yt-duration-dQw4w9WgXcQ.txt`;
@@ -46,7 +46,8 @@ class FakeCommand {
             stdin: new WritableStream(),
             stderr: (async function* () {})(),
             status,
-            output: () => status.then(() => ({ code: 0, stdout: new Uint8Array(), stderr: new Uint8Array() })),
+            output: () =>
+                status.then(() => ({ code: 0, stdout: new Uint8Array(), stderr: new Uint8Array() })),
             kill(signal) {
                 record.signals.push(signal);
                 settle?.({ success: false, code: null, signal });
