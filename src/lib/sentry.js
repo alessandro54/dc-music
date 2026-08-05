@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/deno";
+
 import { COMMIT } from "@/lib/buildInfo.js";
 import { log } from "@/lib/logger.js";
 

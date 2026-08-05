@@ -1,6 +1,7 @@
 import { PermissionFlagsBits } from "discord.js";
-import { queues } from "@/discord/services/playbackService.js";
+
 import { ephemeral } from "@/discord/reply.js";
+import { queues } from "@/discord/services/playbackService.js";
 
 // Route middleware — see defineCommand in router.js. Each returns the value the
 // handler needs, or null after replying with the reason.

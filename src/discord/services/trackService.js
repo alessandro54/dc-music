@@ -1,8 +1,9 @@
 import { and, count, desc, eq, isNotNull, max, sql } from "drizzle-orm";
+
 import { dbKind, getDb } from "@/db/client.js";
 import { songHistory } from "@/db/schema.js";
-import { canonicalUrl, normalizeTitle, trackFingerprint } from "@/lib/media.js";
 import { log } from "@/lib/logger.js";
+import { canonicalUrl, normalizeTitle, trackFingerprint } from "@/lib/media.js";
 import { captureError } from "@/lib/sentry.js";
 
 // Legacy rows predate the column; the boot backfill fills them, and COALESCE

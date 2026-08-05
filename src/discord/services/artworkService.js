@@ -1,5 +1,5 @@
-import { log } from "@/lib/logger.js";
 import { searchTrack } from "@/discord/services/spotifyService.js";
+import { log } from "@/lib/logger.js";
 
 // Square album art for a track that only has a video thumbnail.
 //

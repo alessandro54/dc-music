@@ -1,4 +1,5 @@
 import { Innertube } from "youtubei.js";
+
 import { fmtSecs, ytThumb } from "@/lib/media.js";
 
 // In-process YouTube client. Search is the only thing it is reliably good for on

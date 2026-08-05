@@ -1,8 +1,9 @@
 import { MessageFlags, PermissionFlagsBits } from "discord.js";
+
 import { requireOwner } from "@/discord/guards.js";
-import { reloadCookies } from "@/discord/services/ytdlpService.js";
 import { ephemeral } from "@/discord/reply.js";
 import { defineCommand } from "@/discord/router.js";
+import { reloadCookies } from "@/discord/services/ytdlpService.js";
 
 export default defineCommand({
     name: "setcookies",

@@ -1,6 +1,6 @@
-import { queues } from "@/discord/services/playbackService.js";
 import { ephemeral } from "@/discord/reply.js";
 import { defineCommand } from "@/discord/router.js";
+import { queues } from "@/discord/services/playbackService.js";
 import { queueEmbed } from "@/discord/views/musicEmbeds.js";
 
 export default defineCommand({

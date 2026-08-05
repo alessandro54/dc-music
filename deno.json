@@ -8,6 +8,7 @@
   },
   "lint": {
     "include": ["src/", "tests/", "scripts/"],
+    "plugins": ["./scripts/lint/sort-imports.js"],
     "rules": {
       "exclude": ["require-await"]
     }
@@ -36,6 +37,7 @@
     "test": "deno test --allow-all tests/music/",
     "fmt": "deno fmt",
     "lint": "deno lint",
+    "lint:fix": "deno lint --fix",
     "check": "deno fmt --check && deno lint && deno check src/index.js",
     "db:generate": "deno run -A npm:drizzle-kit@^0.31.0 generate"
   }

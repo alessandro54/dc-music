@@ -1,8 +1,9 @@
 import { MessageFlags } from "discord.js";
-import { log } from "@/lib/logger.js";
-import { captureError, userFrom } from "@/lib/sentry.js";
+
 import { queues } from "@/discord/services/playbackService.js";
 import { nowPlayingControls, nowPlayingEmbed } from "@/discord/views/musicEmbeds.js";
+import { log } from "@/lib/logger.js";
+import { captureError, userFrom } from "@/lib/sentry.js";
 
 export default {
     name: "interactionCreate",

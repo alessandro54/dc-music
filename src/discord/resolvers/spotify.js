@@ -1,5 +1,3 @@
-import { LIMITS } from "@/lib/constants.js";
-import { formatMs } from "@/lib/utils.js";
 import {
     getAlbum,
     getAlbumTracks,
@@ -7,6 +5,8 @@ import {
     getPlaylistMeta,
     getTrack,
 } from "@/discord/services/spotifyService.js";
+import { LIMITS } from "@/lib/constants.js";
+import { formatMs } from "@/lib/utils.js";
 
 // Spotify injects an optional locale segment (e.g. /intl-es/) before the type.
 const TRACK_RE = /open\.spotify\.com\/(?:intl-[a-z]+\/)?track\/([A-Za-z0-9]+)/;

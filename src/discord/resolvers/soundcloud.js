@@ -1,5 +1,5 @@
-import { LIMITS } from "@/lib/constants.js";
 import { fetchPlaylistItems, fetchTrackInfo } from "@/discord/services/metadataService.js";
+import { LIMITS } from "@/lib/constants.js";
 
 const URL_RE = /^https?:\/\/(?:www\.|m\.)?(?:soundcloud\.com|snd\.sc)\//i;
 // /sets/ is SoundCloud's playlist/album URL form.

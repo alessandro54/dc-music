@@ -1,11 +1,11 @@
 import { autocomplete } from "@/discord/commands/playback/play/autocomplete.js";
 import { ensureVoice } from "@/discord/guards.js";
-import { log } from "@/lib/logger.js";
-import { captureError, userFrom } from "@/lib/sentry.js";
-import { enqueue, getOrCreateQueue } from "@/discord/services/playbackService.js";
 import { resolveQuery } from "@/discord/resolvers/index.js";
 import { defineCommand } from "@/discord/router.js";
+import { enqueue, getOrCreateQueue } from "@/discord/services/playbackService.js";
 import { playlistQueued, trackQueued } from "@/discord/views/musicEmbeds.js";
+import { log } from "@/lib/logger.js";
+import { captureError, userFrom } from "@/lib/sentry.js";
 
 // Discord kills an interaction that isn't acknowledged within 3s. Resolving
 // usually finishes in ~30ms (raced metadata sources), so waiting briefly lets

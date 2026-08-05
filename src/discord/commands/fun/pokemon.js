@@ -1,6 +1,7 @@
 import { AttachmentBuilder } from "discord.js";
-import { getRandomPokemon } from "@/discord/services/pokemonService.js";
+
 import { defineCommand } from "@/discord/router.js";
+import { getRandomPokemon } from "@/discord/services/pokemonService.js";
 import { embed } from "@/discord/views/embeds.js";
 
 export default defineCommand({

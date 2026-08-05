@@ -1,5 +1,5 @@
-import { getConfig } from "@/lib/config.js";
 import { embed } from "@/discord/views/embeds.js";
+import { getConfig } from "@/lib/config.js";
 
 export default {
     name: "guildMemberAdd",

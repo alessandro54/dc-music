@@ -1,5 +1,5 @@
-import { COMMIT, COMMIT_URL } from "@/lib/buildInfo.js";
 import { embed } from "@/discord/views/embeds.js";
+import { COMMIT, COMMIT_URL } from "@/lib/buildInfo.js";
 
 function fmtUptime(s) {
     const d = Math.floor(s / 86400);

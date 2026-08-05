@@ -1,10 +1,11 @@
 import { Client, Collection, GatewayIntentBits, Options } from "discord.js";
+
+import { initDb } from "@/db/client.js";
 import { commands } from "@/discord/commands.js";
 import guildMemberAdd from "@/discord/events/guildMemberAdd.js";
 import interactionCreate from "@/discord/events/interactionCreate.js";
 import ready from "@/discord/events/ready.js";
 import { COMMIT, COMMIT_URL } from "@/lib/buildInfo.js";
-import { initDb } from "@/db/client.js";
 import { log } from "@/lib/logger.js";
 // Importing sentry.js runs Sentry.init — it happens during module evaluation,
 // before any of the code below can throw.

@@ -1,8 +1,8 @@
-import { LIMITS } from "@/lib/constants.js";
-import { canonicalUrl } from "@/lib/media.js";
 import { findAlbumArt } from "@/discord/services/artworkService.js";
 import { searchVideo } from "@/discord/services/innertubeService.js";
 import { backfillDuration, fetchPlaylistItems, fetchVideoInfo } from "@/discord/services/metadataService.js";
+import { LIMITS } from "@/lib/constants.js";
+import { canonicalUrl } from "@/lib/media.js";
 
 const URL_RE = /(?:youtube\.com|youtu\.be)/;
 const LIST_RE = /[?&]list=/;

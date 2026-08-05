@@ -1,5 +1,3 @@
-import { createRouter } from "@/discord/router.js";
-
 import debug from "@/discord/commands/admin/debug.js";
 import setcookies from "@/discord/commands/admin/setcookies.js";
 import setup from "@/discord/commands/admin/setup.js";
@@ -17,6 +15,7 @@ import play from "@/discord/commands/playback/play/index.js";
 import queue from "@/discord/commands/playback/queue.js";
 import seek from "@/discord/commands/playback/seek.js";
 import leaderboard from "@/discord/commands/tracks/leaderboard.js";
+import { createRouter } from "@/discord/router.js";
 
 // The route table. Adding a command means importing it and listing it here —
 // nothing scans the filesystem, so the set of live commands is greppable and

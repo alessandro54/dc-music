@@ -1,8 +1,8 @@
-import { LIMITS } from "@/lib/constants.js";
-import { getTopSongs } from "@/discord/services/trackService.js";
 import { ephemeral } from "@/discord/reply.js";
 import { defineCommand } from "@/discord/router.js";
+import { getTopSongs } from "@/discord/services/trackService.js";
 import { leaderboardEmbed } from "@/discord/views/musicEmbeds.js";
+import { LIMITS } from "@/lib/constants.js";
 
 export default defineCommand({
     name: "leaderboard",
