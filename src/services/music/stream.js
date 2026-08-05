@@ -248,12 +248,6 @@ export function _resetShutdownForTests() {
     _shutdownAC = new AbortController();
     liveProcs.clear();
     metaCache.clear();
-    formatUrlCache.clear();
-}
-
-// Test-only view of the format-URL cache.
-export function _formatUrlCacheForTests() {
-    return formatUrlCache;
 }
 
 let _yt = null;
@@ -506,183 +500,13 @@ export async function fetchPlaylistItems(url, limit) {
     }).filter(Boolean);
 }
 
-// ── format-URL cache ───────────────────────────────────────────────────────
-// Timestamped on prod, a cold play spends ~7.6s before the first audio byte:
-//   +560ms   python + yt-dlp import
-//   +1737ms  "Downloading webpage"        (~1.2s)
-//   +1973ms  player API JSON + PO tokens
-//   +3627ms  deno solves the JS challenge (~1.6s)
-//   +3740ms  format 251 chosen
-//   ~7600ms  first byte out of googlevideo
-// Everything up to 3740ms produces one thing: a direct googlevideo URL. That
-// URL stays valid for hours, so caching it turns a repeat play into a plain
-// HTTP GET — no python, no deno, no PO token. The remaining first-byte wait is
-// YouTube's and can only be hidden by prefetching, not removed.
-const formatUrlCache = new Map();
-
-// Trust the URL's own `expire` (unix seconds) rather than a guessed TTL, minus
-// a margin so a stream can't start moments before it lapses.
-const URL_EXPIRY_MARGIN_MS = 10 * 60 * 1000;
-
-function cacheFormatUrl(videoId, mediaUrl) {
-    const expire = Number(new URL(mediaUrl).searchParams.get("expire"));
-    if (!Number.isFinite(expire) || expire <= 0) return;
-    formatUrlCache.set(videoId, { url: mediaUrl, expiresAt: expire * 1000 - URL_EXPIRY_MARGIN_MS });
-}
-
-function cachedFormatUrl(videoId) {
-    const hit = formatUrlCache.get(videoId);
-    if (!hit) return null;
-    if (Date.now() >= hit.expiresAt) {
-        formatUrlCache.delete(videoId);
-        return null;
-    }
-    return hit.url;
-}
-
-// Stream straight from a cached googlevideo URL. Returns null (rather than
-// throwing) whenever anything looks off, so every caller falls back to yt-dlp —
-// a cached URL is an optimisation and must never be the reason audio fails.
-// The response is awaited before the resource is built, so a dead URL is caught
-// here instead of surfacing later as a silent track.
-async function _directStream(videoId, mediaUrl) {
-    try {
-        // Bound the *connect*, never the stream. AbortSignal.timeout() covers
-        // the whole request lifetime, so passing it here truncated playback a
-        // few seconds in — the body is a song, not a short response. Cancel the
-        // timer once headers arrive and let the audio flow for as long as it
-        // takes. googlevideo's first byte is regularly 2-9s, so the budget is
-        // generous on purpose.
-        const ac = new AbortController();
-        const connectTimer = setTimeout(() => ac.abort(), 15000);
-        let res;
-        try {
-            res = await fetch(mediaUrl, { signal: ac.signal, client: proxyClient() });
-        } finally {
-            clearTimeout(connectTimer);
-        }
-        if (!res.ok || !res.body) {
-            formatUrlCache.delete(videoId);
-            log.warn(`[stream] cached URL for ${videoId} returned ${res.status} — re-extracting`);
-            return null;
-        }
-        const resource = createAudioResource(Readable.fromWeb(res.body), { inputType: StreamType.WebmOpus });
-        resource._procs = [];
-        return resource;
-    } catch (err) {
-        formatUrlCache.delete(videoId);
-        log.warn(`[stream] cached URL for ${videoId} failed (${err.message}) — re-extracting`);
-        return null;
-    }
-}
-
-// Resolve a track's media URL ahead of time and cache it, so the play itself is
-// a plain GET. Used to warm the *next* queued track while the current one is
-// already streaming — see GuildQueue.
-// Measured on prod: a URL from `-g` or `--skip-download` is rejected by
-// googlevideo with 403, while the one a real download run resolves fetches
-// fine (200, no headers needed) — those paths skip minting the GVS PO token
-// that the media URL is bound to. So a prefetch has to be an actual download:
-// start one, take the URL from the sidecar the moment it appears, kill it.
-// Only a few hundred KB are pulled before the kill.
-const PREFETCH_TIMEOUT_MS = 30_000;
-const PREFETCH_POLL_MS = 250;
-
-export async function prefetchFormatUrl(url) {
-    const videoId = extractVideoId(url);
-    if (!videoId || cachedFormatUrl(videoId)) return false;
-
-    const sidecar = `/tmp/yt-prefetch-${videoId}.txt`;
-    try {
-        Deno.removeSync(sidecar);
-    } catch { /* no leftover */ }
-
-    // stdout is piped, not discarded, and a little of it is actually read
-    // before the kill. Measured: a URL captured from a run that was killed the
-    // moment the sidecar appeared still 403s — the sidecar is written when the
-    // info dict is ready, before the media request happens, so the URL was
-    // never exercised. Pulling a few KB first yields a URL that fetches 200.
-    const proc = track(
-        new Deno.Command(YTDLP, {
-            args: [
-                ...proxyArgs(),
-                "--no-playlist", "-o", "-", "--quiet", "--no-warnings", "--no-check-formats",
-                "--socket-timeout", "15",
-                ...cookieArgs(), ...CACHE_ARGS, ...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS,
-                "-f", AUDIO_FMT,
-                "--print-to-file", "%(duration)s\n%(urls)s", sidecar,
-                url,
-            ],
-            stdout: "piped",
-            stderr: "null",
-        }).spawn(),
-    );
-
-    // Drain a little audio so the media URL is genuinely exercised, then stop.
-    const PREFETCH_WARM_BYTES = 32 * 1024;
-    const warmed = (async () => {
-        let got = 0;
-        try {
-            for await (const chunk of proc.stdout) {
-                got += chunk.length;
-                if (got >= PREFETCH_WARM_BYTES) break;
-            }
-        } catch { /* killed or closed — nothing to salvage */ }
-        return got;
-    })();
-
-    // A dead extractor (private/unavailable video) writes no sidecar, so
-    // without this the loop would poll out the full timeout — 30s of a
-    // prefetch slot held for a track that was never going to resolve.
-    let exited = false;
-    proc.status.then(() => {
-        exited = true;
-    }).catch(() => {
-        exited = true;
-    });
-
-    const deadline = Date.now() + PREFETCH_TIMEOUT_MS;
-    try {
-        while (Date.now() < deadline) {
-            if (_shutdownAC.signal.aborted) return false;
-            let lines;
-            try {
-                lines = (await Deno.readTextFile(sidecar)).trim().split("\n");
-            } catch {
-                // Check *after* the read: yt-dlp may have written the sidecar
-                // and exited between ticks.
-                if (exited) return false;
-                await sleep(PREFETCH_POLL_MS, _shutdownAC.signal).catch(() => {});
-                continue;
-            }
-            const mediaUrl = lines[1];
-            // The file can exist with only the duration line flushed. Keep
-            // polling instead of giving up — treating a half-written sidecar as
-            // failure is why prefetch silently never worked in production.
-            if (!mediaUrl?.startsWith("http")) {
-                if (exited) return false;
-                await sleep(PREFETCH_POLL_MS, _shutdownAC.signal).catch(() => {});
-                continue;
-            }
-            // Wait for the warm-up read: caching before the URL has served a
-            // byte is what produced 403s on the next play.
-            if (await warmed === 0 && !exited) {
-                log.warn(`[stream] prefetch for ${videoId} resolved a URL that served no data`);
-                return false;
-            }
-            cacheFormatUrl(videoId, mediaUrl);
-            return cachedFormatUrl(videoId) !== null;
-        }
-        return false;
-    } catch (err) {
-        log.warn(`[stream] prefetch failed for ${url}: ${err.message}`);
-        return false;
-    } finally {
-        // Always stop the download — it only ever existed for the URL.
-        await reap(proc);
-        Deno.remove(sidecar).catch(() => {});
-    }
-}
+// A googlevideo media URL cannot be fetched with a plain GET: the server
+// truncates an un-ranged request. Measured on a 4:19 track its clen said
+// 4,429,008 bytes while a single fetch returned 622,592, so playback ended a
+// few seconds in. yt-dlp downloads in ranged chunks, which is why it is
+// correct. A format-URL cache therefore needs a ranged reader, not a fetch —
+// until it has one there is no cache, and the cookie-free fast path already
+// gets a cold play to ~2s on its own.
 
 // Wait for the stream to actually produce a byte, so a dead extraction is
 // caught here instead of surfacing 25s later as a stalled track. Returns a
@@ -728,21 +552,6 @@ export async function _awaitFirstByte(webStream, proc) {
 }
 
 export async function createStream(url, seekSeconds = 0, onDuration = null) {
-    // Seeking needs yt-dlp's --download-sections; only plain playback can use
-    // the cached URL.
-    if (seekSeconds === 0) {
-        const videoId = extractVideoId(url);
-        const hit = videoId && cachedFormatUrl(videoId);
-        if (hit) {
-            const resource = await _directStream(videoId, hit);
-            if (resource) {
-                log.info(`[stream] streaming ${videoId} from cached URL (no yt-dlp)`);
-                // Cached URLs skip extraction, so nothing reports a duration —
-                // fall back to the eager backfill for it.
-                return resource;
-            }
-        }
-    }
     // The cookie-free path is ~3x faster (1.8s vs 7.4s) but only succeeds on
     // ~75% of unseen videos, so it is only safe now that a failure is detected
     // in seconds rather than surfacing as a 25s stall. Try fast, prove audio is
@@ -788,16 +597,7 @@ function _watchDurationFile(path, videoId, onDuration) {
             return; // not written yet
         }
         stop();
-        // Line 1 is %(duration)s, line 2 is %(urls)s — the media URL this
-        // extraction resolved. Caching it here is free: the next play of the
-        // same track skips extraction entirely.
-        const [durRaw, urlRaw] = raw;
-        if (urlRaw?.startsWith("http")) {
-            try {
-                cacheFormatUrl(videoId, urlRaw);
-            } catch { /* unparseable URL — just don't cache it */ }
-        }
-        const secs = Number(durRaw);
+        const secs = Number(raw[0]);
         if (!Number.isFinite(secs) || secs <= 0) return;
         const duration = fmtSecs(secs);
         const cached = metaCache.get(videoId);
@@ -868,8 +668,7 @@ function _ytdlpStream(url, seekSeconds, onDuration = null, { useCookies = true }
         args.push("-f", AUDIO_FMT);
     }
 
-    // Two lines: the duration, then the resolved media URL for the cache.
-    if (durationFile) args.push("--print-to-file", "%(duration)s\n%(urls)s", durationFile);
+    if (durationFile) args.push("--print-to-file", "%(duration)s", durationFile);
 
     args.push(url);
 

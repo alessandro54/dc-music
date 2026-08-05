@@ -101,17 +101,16 @@ sequenceDiagram
     C-->>B: title in ~30ms
     B-->>U: embed (single round-trip, ~400ms)
 
-    alt media URL cached and unexpired
-        B->>G: plain fetch, no subprocess
-        G-->>B: audio in ~2.3s
-    else cold
-        B->>Y: spawn (proxy + PO token)
-        Y->>G: extract, then stream
-        G-->>B: audio in ~1.8s via WARP · ~7.5s direct
-        Y-->>C: media URL + duration via --print-to-file sidecar
+    B->>Y: spawn cookie-free via proxy
+    Y->>G: extract, then stream
+    alt first byte arrives
+        G-->>B: audio in ~2s
+    else nothing within ~1s
+        B->>Y: respawn with cookies
+        Y->>G: authenticated extract
+        G-->>B: audio in ~7.4s
     end
 
-    Note over B,C: on Playing, prefetch the *next* queued track
 ```
 
 Three caches, each removing a different cost:
@@ -119,15 +118,17 @@ Three caches, each removing a different cost:
 - **Metadata** (memory → `song_history` → Innertube → oEmbed, raced): title in
   ~30ms instead of a 3.7s yt-dlp call. Raced rather than chained because each
   source misses often; chaining paid the sum of the misses.
-- **Format URL**, keyed by video id, expiring on the URL's own `expire` param
-  minus 10 minutes. A repeat play becomes a plain `fetch` with no subprocess.
-  Captured for free from the streaming run's `--print-to-file` sidecar.
-- **Prefetch**: the next queued track is resolved while the current one is
-  *playing* — never while one is starting. On 2 cores, a second extraction
-  alongside a starting stream cost 6.9s of silence.
+- **Fast path with fallback**: a cold play first tries cookie-free through the
+  proxy (~2s) and falls back to the authenticated path (~7.4s) if no audio
+  arrives. `createStream` waits for a real first byte before handing the
+  resource to the player, so a miss costs <1s instead of a 25s stall.
 
-A cached URL is an optimisation and never a dependency: any non-OK status or
-throw evicts the entry and falls back to yt-dlp.
+There is deliberately **no media-URL cache**. One existed and had to be removed:
+a googlevideo URL fetched with a plain GET is truncated by the server — on a
+4:19 track `clen` was 4,429,008 bytes and a single `fetch` returned 622,592, so
+playback ended a few seconds in. yt-dlp ranges its own downloads, which is why
+it is correct. Reinstating the cache means writing a ranged reader first; the
+cookie-free path already gets a cold play to ~2s without one.
 
 ## Failure modes
 
@@ -168,8 +169,7 @@ where a miss is cheap:
 
 | call | cookies | why |
 | --- | --- | --- |
-| streaming spawn | **always** | the resource is already handed to the player; a miss costs a 25s stall |
-| prefetch | omitted when proxied | a miss just means the next play is a normal cold one |
+| streaming spawn | tried without first | a miss is caught in <1s by the first-byte check, then retried with cookies |
 | metadata / playlist | omitted when proxied | `runYtdlp` retries direct with cookies immediately |
 
 The practical effect: a first play of an unseen track is the reliable ~7.4s,
