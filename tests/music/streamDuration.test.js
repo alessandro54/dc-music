@@ -1,7 +1,7 @@
 // Covers the duration path that lets a playing track avoid a second yt-dlp:
 // the streaming spawn writes `%(duration)s` to a sidecar file, and backfill
 // only spawns when nothing cheaper has filled the duration in.
-import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@^1.0.0";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
     _awaitFirstByte,
     _resetShutdownForTests,

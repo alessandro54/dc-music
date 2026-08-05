@@ -163,25 +163,38 @@ If `DASHBOARD_TOKEN` is set, append `?token=<your_token>` to the URL. The token 
 
 ## Performance
 
-`/play` used to wait on `yt-dlp --dump-json` just to read a title — ~4s before the embed
-appeared. Three changes removed that, measured on a 2-core arm64 VM:
+Every number below is measured on the production box — a 2-core Oracle Ampere
+arm64 VM — not estimated.
 
 | | before | after |
 |---|---|---|
-| `/play` → embed | 0.8–1.7s | ~0.35s |
-| queued → audible | up to 6.9s | ~6ms |
+| `/play` → embed | 0.8–1.7s | **~0.5–1.0s** |
+| cold play → first audio | 7.4s | **~2s** (~8s when it falls back) |
+| queued → audible | up to 6.9s | ~0 |
 
-1. **Metadata sources race** instead of chaining. Each one misses often (history miss, Innertube
-   bot-gated, oEmbed 404 on unlisted), so a chain paid the sum of the misses; a race pays the
-   fastest source that answers.
-2. **The streaming extraction reports its own duration** via `--print-to-file`, so a playing track
-   never spawns a second yt-dlp. That duplicate was the 6.9s — two extractions of the same video
-   competing for two cores while the user waited for sound.
-3. **`(url, played_at)` index** — the history lookup in front of every `/play` was a full scan,
-   and on a remote database that's a network round-trip.
+**Enqueue.** Metadata sources race instead of chaining — history row, Innertube
+and oEmbed in parallel, yt-dlp only if all three miss. Each misses often enough
+that a chain paid the sum of the misses; a race pays the fastest answer, ~30ms.
+The reply is a single Discord round-trip: the embed *is* the acknowledgement,
+rather than "🔍 Searching…" followed by an edit. At that point Discord's own
+latency is the floor, not our work.
 
-Every stage logs its own timing (`resolved in Nms`, `metadata via <source> in Nms`, `spawn Nms`)
-so a regression shows up as a number rather than a hunch.
+**Time to audio.** A cold play tries cookie-free through a proxy first (~2s) and
+falls back to the cookie-authenticated path (~7.4s) if no audio arrives. Cookies
+cost ~6s — an authenticated session makes YouTube demand the full player-JS and
+nsig chain — but the cookie-free path only works on ~75% of unseen videos, so
+both halves earn their place. `createStream` waits for a real first byte before
+handing the stream to the player, which is what makes the fallback affordable:
+a miss costs under a second instead of a 25s stall.
+
+**Process discipline.** Playback is sequential and every spawn is reaped under a
+deadline. A second concurrent yt-dlp on two cores directly delays the audio
+someone is waiting for — that was the 6.9s.
+
+Every stage logs its own timing (`resolved in Nms`, `metadata via <source> in
+Nms`, `audio in Nms`) so a regression shows up as a number rather than a hunch.
+Full topology and the measurements behind each choice:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
@@ -223,7 +236,7 @@ deno install --allow-scripts   # install deps
 deno task dev                  # run with auto-restart
 deno task start                # run without watch
 deno task deploy               # register slash commands
-deno task test                 # duration sidecar + spawn lifecycle
+deno task test                 # unit tests (stubbed, no network)
 ```
 
 ---

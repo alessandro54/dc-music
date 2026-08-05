@@ -172,8 +172,8 @@ where a miss is cheap:
 | streaming spawn | tried without first | a miss is caught in <1s by the first-byte check, then retried with cookies |
 | metadata / playlist | omitted when proxied | `runYtdlp` retries direct with cookies immediately |
 
-The practical effect: a first play of an unseen track is the reliable ~7.4s,
-and anything prefetched or replayed is ~2s from cache. A stalled stream still
+The practical effect: a cold play is ~2s when the fast path lands and ~8s
+when it falls back. A stalled stream still
 forces the direct path and replays the track once before skipping it.
 
 ## Known sharp edges

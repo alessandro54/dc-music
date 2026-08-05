@@ -108,20 +108,6 @@ function cookieArgs({ critical = false } = {}) {
     return COOKIES_ARGS;
 }
 
-// A media URL is minted for whichever egress IP asked for it, so a URL the
-// proxy obtained must also be *fetched* through the proxy — otherwise the
-// cached-URL path 403s and silently falls back to yt-dlp, which is exactly
-// what happened the first time the proxy was switched on.
-let _proxyClient = null;
-function proxyClient() {
-    // Same health gate as proxyArgs(): in cooldown we go direct, and a URL
-    // minted through the proxy will then 403 and evict itself, which is the
-    // intended fallback rather than a failure.
-    if (!PROXY || Date.now() < proxyDisabledUntil) return undefined;
-    _proxyClient ??= Deno.createHttpClient({ proxy: { url: PROXY } });
-    return _proxyClient;
-}
-
 function markProxyBad(reason) {
     if (!PROXY || Date.now() < proxyDisabledUntil) return;
     proxyDisabledUntil = Date.now() + PROXY_COOLDOWN_MS;
@@ -248,6 +234,9 @@ export function _resetShutdownForTests() {
     _shutdownAC = new AbortController();
     liveProcs.clear();
     metaCache.clear();
+    // The proxy cooldown is module state; without clearing it one test that
+    // trips a fallback silently changes the path every later test takes.
+    proxyDisabledUntil = 0;
 }
 
 let _yt = null;

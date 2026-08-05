@@ -719,6 +719,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@db/sqlite@0.12",
+      "jsr:@std/assert@1",
       "npm:@discordjs/voice@0.19",
       "npm:@libsql/client@0.15",
       "npm:@sentry/deno@^10.69.0",
