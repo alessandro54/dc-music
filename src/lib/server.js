@@ -56,6 +56,19 @@ export function startServer(port, queues, client) {
     }, async (req) => {
         const url = new URL(req.url);
 
+        // Above checkAuth on purpose: Dokku's healthcheck can't send the token,
+        // and with DASHBOARD_TOKEN set every other route answers 401 — which a
+        // probe reads as unhealthy. Exposes nothing but readiness.
+        //
+        // 200 means *connected to Discord*, not merely listening. startServer
+        // runs before client.login, so an unconditional 200 would report healthy
+        // while the bot still can't play anything — and Dokku would kill the old
+        // container on that promise. This is what makes zero-downtime real.
+        if (req.method === "GET" && url.pathname === "/health") {
+            const ready = client?.isReady() ?? false;
+            return new Response(ready ? "ok" : "connecting", { status: ready ? 200 : 503 });
+        }
+
         if (!checkAuth(req, url)) {
             return new Response("Unauthorized", { status: 401 });
         }
