@@ -1,7 +1,8 @@
 import { AudioPlayerStatus } from "@discordjs/voice";
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
-import { COLORS, LIMITS } from "@/lib/constants.js";
+
 import { embed } from "@/discord/views/embeds.js";
+import { COLORS, LIMITS } from "@/lib/constants.js";
 import { durationToMs, formatMs, progressBar } from "@/lib/utils.js";
 
 // Single track added — "Now Playing" if it starts immediately, else "Added to Queue".

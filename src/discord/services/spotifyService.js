@@ -76,6 +76,12 @@ async function spotifyFetch(path, { userAuth = false } = {}) {
     return data;
 }
 
+// Fetch the client-credentials token now, so the first real call doesn't pay for
+// it. Measured: an artwork lookup that also has to mint a token takes ~2.1s,
+// which overruns /play's 2s acknowledge budget and costs the user an extra
+// round-trip on the first play after every restart.
+export const warmToken = () => spotifyToken.get();
+
 export const getTrack = (id) => spotifyFetch(`/tracks/${id}`);
 
 // Playlist name/art is public catalog data, so client-credentials is enough here.
@@ -94,3 +100,8 @@ export const getPlaylistItems = (id, limit = LIMITS.PLAYLIST_MAX) =>
 export const getAlbum = (id) => spotifyFetch(`/albums/${id}?fields=name,images`);
 
 export const getAlbumTracks = (id, limit = 50) => spotifyFetch(`/albums/${id}/tracks?limit=${limit}`);
+
+// Text search. Used to find album art for tracks that came from YouTube, where
+// the only artwork available is a letterboxed video thumbnail.
+export const searchTrack = (query, limit = 1) =>
+    spotifyFetch(`/search?${new URLSearchParams({ q: query, type: "track", limit: String(limit) })}`);

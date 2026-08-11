@@ -1,8 +1,8 @@
-import { LIMITS } from "@/lib/constants.js";
-import { getHistory } from "@/discord/services/trackService.js";
 import { ephemeral } from "@/discord/reply.js";
 import { defineCommand } from "@/discord/router.js";
+import { getHistory } from "@/discord/services/trackService.js";
 import { embed } from "@/discord/views/embeds.js";
+import { LIMITS } from "@/lib/constants.js";
 
 export default defineCommand({
     name: "history",

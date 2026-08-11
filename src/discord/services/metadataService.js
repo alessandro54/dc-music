@@ -1,7 +1,5 @@
-import { extractVideoId, fmtSecs, isYouTubeUrl, ytThumb } from "@/lib/media.js";
-import { log } from "@/lib/logger.js";
-import { getSongMeta } from "@/discord/services/trackService.js";
 import { getInnertube } from "@/discord/services/innertubeService.js";
+import { getSongMeta } from "@/discord/services/trackService.js";
 import {
     cacheArgs,
     cookieArgs,
@@ -14,6 +12,8 @@ import {
     shutdownSignal,
     sleep,
 } from "@/discord/services/ytdlpService.js";
+import { log } from "@/lib/logger.js";
+import { extractVideoId, fmtSecs, isYouTubeUrl, ytThumb } from "@/lib/media.js";
 
 // Title / duration / artwork for a URL, and the playlist listing. Everything here
 // is read-only lookup — the audio itself is streamService's job.

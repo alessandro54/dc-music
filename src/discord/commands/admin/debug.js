@@ -1,7 +1,8 @@
 import { MessageFlags, PermissionFlagsBits } from "discord.js";
+
 import { requireOwner } from "@/discord/guards.js";
-import { getHealth } from "@/discord/services/healthService.js";
 import { defineCommand } from "@/discord/router.js";
+import { getHealth } from "@/discord/services/healthService.js";
 import { healthEmbed } from "@/discord/views/healthEmbed.js";
 
 export default defineCommand({

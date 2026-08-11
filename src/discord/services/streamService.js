@@ -1,8 +1,6 @@
-import { Readable } from "node:stream";
 import { createAudioResource, StreamType } from "@discordjs/voice";
-import { extractVideoId, fmtSecs, isYouTubeUrl, trackKey } from "@/lib/media.js";
-import { log } from "@/lib/logger.js";
-import { captureError } from "@/lib/sentry.js";
+import { Readable } from "node:stream";
+
 import { cacheDuration, clearMetaCache, noteStreamSpawn } from "@/discord/services/metadataService.js";
 import {
     _resetForTests as _resetYtdlpForTests,
@@ -19,6 +17,9 @@ import {
     spawn,
     track,
 } from "@/discord/services/ytdlpService.js";
+import { log } from "@/lib/logger.js";
+import { extractVideoId, fmtSecs, isYouTubeUrl, trackKey } from "@/lib/media.js";
+import { captureError } from "@/lib/sentry.js";
 
 // Audio only: turn a URL into a playable AudioResource, and tear one down.
 // Process spawning/args live in ytdlpService; titles and durations in

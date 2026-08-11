@@ -1,7 +1,8 @@
-import { LIMITS } from "@/lib/constants.js";
-import { canonicalUrl } from "@/lib/media.js";
+import { findAlbumArt } from "@/discord/services/artworkService.js";
 import { searchVideo } from "@/discord/services/innertubeService.js";
 import { backfillDuration, fetchPlaylistItems, fetchVideoInfo } from "@/discord/services/metadataService.js";
+import { LIMITS } from "@/lib/constants.js";
+import { canonicalUrl } from "@/lib/media.js";
 
 const URL_RE = /(?:youtube\.com|youtu\.be)/;
 const LIST_RE = /[?&]list=/;
@@ -45,14 +46,23 @@ export default {
         // Ask yt-dlp for it in the background rather than making the user wait
         // seconds for a number that only decorates the embed.
         if (!track.duration) void backfillDuration(track);
+        await withAlbumArt(track);
         return { songs: [track], playlistName: null };
     },
 
     // Plain text falls through to here — YouTube search is the default source.
     async search(query, requestedBy, requestedById) {
-        return {
-            songs: [song(await searchVideo(query), requestedBy, requestedById)],
-            playlistName: null,
-        };
+        const track = song(await searchVideo(query), requestedBy, requestedById);
+        await withAlbumArt(track);
+        return { songs: [track], playlistName: null };
     },
 };
+
+// Swap the letterboxed YouTube thumbnail for square album art when Spotify knows
+// the track. Awaited — it lands inside /play's 2s acknowledge budget, so the
+// first embed already shows the right cover instead of correcting itself later.
+// Only for single tracks: a 100-item playlist would mean 100 lookups.
+async function withAlbumArt(track) {
+    const art = await findAlbumArt(track.title);
+    if (art) track.thumbnail = art;
+}

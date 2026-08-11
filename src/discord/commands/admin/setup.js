@@ -1,7 +1,8 @@
 import { PermissionFlagsBits } from "discord.js";
-import { getConfig, setConfig } from "@/lib/config.js";
+
 import { ephemeral } from "@/discord/reply.js";
 import { defineCommand } from "@/discord/router.js";
+import { getConfig, setConfig } from "@/lib/config.js";
 
 export default defineCommand({
     name: "setup",

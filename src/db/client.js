@@ -43,23 +43,34 @@ export async function initDb() {
     });
 }
 
-// Rows written before the fingerprint column existed have NULL, which would put
-// every legacy play in one group. Derived with the same function the writes use,
-// so backfilled and new rows agree; a no-op on every boot after the first.
+// Rows written before the fingerprint/source columns existed have NULL, which
+// would put every legacy play in one group. Derived with the same function the
+// writes use, so backfilled and new rows agree; a no-op after the first boot.
+//
+// `source` is only a guess for legacy rows: it is read off the url, so a play that
+// was *requested* from Spotify reads as "youtube", because that is the video
+// _playNext resolved it to and the origin was never recorded. Unknowable now —
+// only new rows carry true provenance.
 const BACKFILL_CHUNK = 100;
 
 async function backfillFingerprints(client) {
     const { rows } = await client.execute(
-        "SELECT DISTINCT url FROM song_history WHERE fingerprint IS NULL AND url IS NOT NULL",
+        `SELECT DISTINCT url FROM song_history
+         WHERE url IS NOT NULL AND (fingerprint IS NULL OR source IS NULL)`,
     );
     if (!rows.length) return;
 
-    const { trackFingerprint } = await import("@/lib/media.js");
+    const { trackFingerprint, isYouTubeUrl } = await import("@/lib/media.js");
+    const sourceOf = (url) =>
+        isYouTubeUrl(url) ? "youtube" : /soundcloud\.com|snd\.sc/i.test(url) ? "soundcloud" : null;
     const statements = rows.map((row) => {
         const url = row[0] ?? row.url;
         return {
-            sql: "UPDATE song_history SET fingerprint = ? WHERE fingerprint IS NULL AND url = ?",
-            args: [trackFingerprint(url), url],
+            sql: `UPDATE song_history
+                     SET fingerprint = coalesce(fingerprint, ?),
+                         source      = coalesce(source, ?)
+                   WHERE url = ? AND (fingerprint IS NULL OR source IS NULL)`,
+            args: [trackFingerprint(url), sourceOf(url), url],
         };
     });
 
@@ -68,7 +79,7 @@ async function backfillFingerprints(client) {
     for (let i = 0; i < statements.length; i += BACKFILL_CHUNK) {
         await client.batch(statements.slice(i, i + BACKFILL_CHUNK), "write");
     }
-    log.db(`backfilled fingerprints for ${rows.length} distinct url(s)`);
+    log.db(`backfilled fingerprint/source for ${rows.length} distinct url(s)`);
 }
 
 export function getDb() {

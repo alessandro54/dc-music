@@ -1,11 +1,12 @@
 import { AudioPlayerStatus, createAudioPlayer, entersState, VoiceConnectionStatus } from "@discordjs/voice";
-import { TIMEOUTS } from "@/lib/constants.js";
-import { saveSong } from "@/discord/services/trackService.js";
-import { log } from "@/lib/logger.js";
-import { captureError, captureWarn } from "@/lib/sentry.js";
+
 import { searchVideo } from "@/discord/services/innertubeService.js";
 import { createStream, destroyResource } from "@/discord/services/streamService.js";
+import { saveSong } from "@/discord/services/trackService.js";
 import { forceDirectStreams } from "@/discord/services/ytdlpService.js";
+import { TIMEOUTS } from "@/lib/constants.js";
+import { log } from "@/lib/logger.js";
+import { captureError, captureWarn } from "@/lib/sentry.js";
 
 // One guild's playback state machine: the song list, the audio player, the
 // watchdogs. NOT a service — it owns per-guild state and there is one instance
@@ -227,6 +228,7 @@ export class GuildQueue {
                 url: song.url,
                 duration: song.duration,
                 viaPlaylist: song.viaPlaylist,
+                source: song.source,
             });
         } catch (err) {
             log.error(`[Queue ${this.guildId}] Stream: ${err.message}`);

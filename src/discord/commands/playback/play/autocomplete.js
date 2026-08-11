@@ -1,9 +1,9 @@
-import { LIMITS } from "@/lib/constants.js";
-import { getRecentSongs } from "@/discord/services/trackService.js";
-import { log } from "@/lib/logger.js";
-import { searchVideos } from "@/discord/services/innertubeService.js";
 import { RESOLVERS } from "@/discord/resolvers/index.js";
 import spotify, { trackMeta } from "@/discord/resolvers/spotify.js";
+import { searchVideos } from "@/discord/services/innertubeService.js";
+import { getRecentSongs } from "@/discord/services/trackService.js";
+import { LIMITS } from "@/lib/constants.js";
+import { log } from "@/lib/logger.js";
 
 // Any URL a resolver claims is already playable as typed — suggesting search
 // results for it would only get in the way. Spotify is handled separately

@@ -1,4 +1,5 @@
 import { REST, Routes } from "discord.js";
+
 import { commands as registered } from "@/discord/commands.js";
 
 const commands = registered

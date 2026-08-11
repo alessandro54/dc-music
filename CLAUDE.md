@@ -28,6 +28,15 @@ deploy/runbook in `docs/DEPLOY.md`.
   local/manual registration. It resolves the application id from `BOT_TOKEN` (an app id *is* its
   bot user's id) rather than reading `CLIENT_ID` — a stale id publishes commands to an app that
   isn't in the guild, and the only symptom is a command that silently never appears.
+- `deno task lint:fix` — `deno lint --fix`. Applies the **import sorter**, a local lint plugin
+  (`scripts/lint/sort-imports.js`, wired via `lint.plugins`). Neither `deno fmt` nor `deno lint` sorts
+  imports and Biome is gone, so a plugin with a `fix()` is the only in-toolchain way to get it. Order is
+  bare specifiers, blank line, then `@/`, alphabetical within each group. **Two kinds of import are pinned
+  and never move**: one with a comment above it (the comment explains the position, and sorting would
+  strand it) and a side-effect import (`import "x"`). That exists because order here is not always
+  cosmetic — `@/lib/sentry.js` runs `Sentry.init` on evaluation, and `src/index.js` deliberately imports it
+  ahead of the service modules whose top-level code it is meant to capture. `deno task check` now fails on
+  unsorted imports, so run `lint:fix` before it.
 - `deno task fmt` / `deno task lint` / `deno task check` — **`deno fmt` + `deno lint`, no Biome.** Biome was config-only (nothing installed it, no CI step, no task), so it was deleted; the `biome-ignore` pragma in `spriteImageService.js` became a `deno-lint-ignore`. `fmt` is scoped to `src/`, `tests/`, `scripts/`, `drizzle.config.js` with `indentWidth: 4` / `lineWidth: 110` to match the existing style — **Markdown and YAML are deliberately out of scope** (`deno fmt` prose-reflows `.md`, which was 879 diff lines across the docs). `src/db/migrations/` is excluded too. `require-await` is off: `async execute` is the handler contract (the dispatcher awaits every one), so the rule flags convention, not bugs.
 - `deno task test` — `tests/music/` (duration sidecar, spawn lifecycle, fast-path fallback). Stubs `Deno.Command`, no network. The three stale `bun:test` files were deleted; they had not been runnable since the `services/` move.
 - `tests/e2e/stream.e2e.js` — real yt-dlp against real YouTube, so it only means anything **inside the deployed container**: `docker cp` it in, then `dokku enter music-bot web deno run --allow-all …`. It pulls 1.5MB deliberately: reading only the first 64KB is what let a truncated-stream bug ship.
@@ -77,7 +86,8 @@ src/
                (URL → AudioResource, ffmpeg transcode, teardown). Plus playbackService
                (the queues Map + bot presence + getOrCreateQueue/enqueue),
                spotifyService (Web API client), trackService (song_history queries),
-               healthService, pokemonService, spriteImageService (PNG compositing)
+               artworkService (square album art), healthService, pokemonService,
+               spriteImageService (PNG compositing)
     resolvers/ /play input → songs, one module per source — see below. Sits *above* services:
                it orchestrates them (streamService, spotifyService), so it isn't one itself
     views/     response/embed builders (musicEmbeds, healthEmbed, embeds)
@@ -295,6 +305,32 @@ Innertube), which was already fast and didn't change. The raced sources and the 
 are only exercised by a **YouTube URL never played before** — a repeat play hits the cache/DB.
 That path is not yet measured on prod.
 
+## Album Art (`services/artworkService.js`)
+
+YouTube serves 4:3/16:9 thumbnails, so a square album cover arrives **padded with
+black bars** — which is what the Now Playing embed showed. **Spotify is the single
+art provider** for every source: its album images are square 640x640 and the
+credentials are already there. Spotify-sourced songs carry their art already;
+`artworkService` covers the YouTube paths (single video + search).
+
+- `artworkQuery()` strips packaging before searching — a bracketed group goes only
+  if it mentions packaging *and* names no distinct recording, matched on
+  *contains* because `(Official 4K Music Video)` interleaves the two. Live, Remix,
+  Acoustic, Cover, Instrumental all survive: they should steer the match.
+- **Awaited, not backfilled**, so the *first* embed is already right. It fits:
+  warm lookups are 400-670ms against `/play`'s 2000ms acknowledge budget
+  (measured 840-1552ms end to end). A 1200ms deadline bounds it, and a miss just
+  keeps the YouTube thumbnail.
+- **`warmToken()` runs at boot** (`index.js`, not awaited). Without it the first
+  artwork lookup also mints the OAuth token — measured **2115ms**, which overruns
+  the budget and costs the user a second round-trip on the first play after every
+  restart.
+- **Timeouts are not cached, genuine misses are.** A title Spotify doesn't know is
+  remembered as null; a timeout says nothing about the track, and caching the
+  cold-start one would blank that cover permanently.
+- **Playlists are skipped on purpose** — 100 items would mean 100 lookups for art
+  nobody has looked at yet.
+
 ## Database (`src/db/`)
 - **Drizzle ORM** over `@libsql/client` for both environments. `client.js` = init + client pick; `schema.js` = drizzle table def (source of truth); `migrations/` = drizzle-kit output, applied on boot via `migrate()` (`drizzle-orm/libsql/migrator`). song_history queries live in `src/discord/services/trackService.js` (the one query module — it stays with the domain, not in `db/`) (`saveSong`/`getHistory`/`getRecentSongs`/`getSongMeta`).
 - **Schema changes:** edit `schema.js` → `deno task db:generate` (drizzle-kit, config in `drizzle.config.js`) → commit the new `migrations/*.sql` + `meta/`. Never hand-edit applied migrations — exception: `0000` got `IF NOT EXISTS` added by hand because prod Turso already had the table before the migrator existed.
@@ -312,6 +348,12 @@ That path is not yet measured on prod.
   running, verified mid-flight. The UPDATEs are batched 100 at a time because on Turso each `execute()` is
   its own HTTP round-trip; 120 legacy urls became 2 requests instead of 120. A failure only logs: the
   coalesce keeps results right, and the next boot retries.
+- **Every row records its `source`** (migration 0003): `"youtube"` | `"spotify"` | `"soundcloud"`. Stamped
+  centrally in `resolvers/index.js` from the resolver's own `name`, so a new source is labelled without
+  touching that code. It is **provenance, not where the audio came from** — a Spotify request stays
+  `"spotify"` even though `_playNext` resolves it to a YouTube video to play, which is precisely why it
+  can't be read back off the `url`. Legacy rows are backfilled from the url, so a pre-0003 Spotify request
+  reads as `"youtube"`: its origin was never recorded and is unknowable now.
 - **Playlist tracks are plays, not picks.** Every row carries `via_playlist` (migration 0002), set by the
   resolvers on playlist/album/set branches and carried through `_playNext` into history. `/history` and
   the `/play` autocomplete suggestions filter it out (`CHOSEN` in trackService) — otherwise one 100-track

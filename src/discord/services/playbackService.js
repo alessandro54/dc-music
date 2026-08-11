@@ -1,4 +1,5 @@
 import { joinVoiceChannel } from "@discordjs/voice";
+
 import { GuildQueue } from "@/discord/guildQueue.js";
 
 // Owns the live queues: one GuildQueue per active guild, plus the bot presence

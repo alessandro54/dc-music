@@ -1,4 +1,5 @@
 import { join } from "node:path";
+
 import { log } from "@/lib/logger.js";
 
 const CONFIG_PATH = join(Deno.cwd(), "config.json");

@@ -1,5 +1,5 @@
-import { log } from "@/lib/logger.js";
 import { READY_FILE } from "@/lib/constants.js";
+import { log } from "@/lib/logger.js";
 
 export default {
     name: "clientReady",
