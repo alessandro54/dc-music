@@ -1,0 +1,9 @@
+{
+    "name": "music-bot",
+    "description": "Personal Discord music bot",
+    "scripts": {
+        "dokku": {
+            "postdeploy": "deno run --allow-all --cached-only src/deployCommands.js"
+        }
+    }
+}

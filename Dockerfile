@@ -47,6 +47,12 @@ RUN python3 -m venv /opt/ytdlp \
 
 COPY src/ ./src/
 
+# Dokku reads app.json out of the deployed image (git:from-image), and its
+# postdeploy hook is what registers the slash commands on every release. Without
+# this COPY the hook simply never runs — which is how a new command could ship in
+# the image and never appear in Discord.
+COPY app.json ./
+
 ENV NODE_ENV=production \
     YTDLP_PATH=/usr/local/bin/yt-dlp
 

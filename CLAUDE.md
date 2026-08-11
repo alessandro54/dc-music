@@ -23,7 +23,11 @@ deploy/runbook in `docs/DEPLOY.md`.
 
 ## Commands
 - `deno task dev` — run with auto-restart (src/ directly)
-- `deno task deploy` — register slash commands with Discord API
+- `deno task deploy` — register slash commands with Discord API. **Runs automatically on every
+  production deploy** via the Dokku `postdeploy` hook in `app.json`, so this is only needed for
+  local/manual registration. It resolves the application id from `BOT_TOKEN` (an app id *is* its
+  bot user's id) rather than reading `CLIENT_ID` — a stale id publishes commands to an app that
+  isn't in the guild, and the only symptom is a command that silently never appears.
 - `deno task fmt` / `deno task lint` / `deno task check` — **`deno fmt` + `deno lint`, no Biome.** Biome was config-only (nothing installed it, no CI step, no task), so it was deleted; the `biome-ignore` pragma in `spriteImageService.js` became a `deno-lint-ignore`. `fmt` is scoped to `src/`, `tests/`, `scripts/`, `drizzle.config.js` with `indentWidth: 4` / `lineWidth: 110` to match the existing style — **Markdown and YAML are deliberately out of scope** (`deno fmt` prose-reflows `.md`, which was 879 diff lines across the docs). `src/db/migrations/` and the dashboard HTML are excluded too. `require-await` is off: `async execute` is the handler contract (the dispatcher awaits every one), so the rule flags convention, not bugs.
 - `deno task test` — `tests/music/` (duration sidecar, spawn lifecycle, fast-path fallback). Stubs `Deno.Command`, no network. The three stale `bun:test` files were deleted; they had not been runnable since the `services/` move.
 - `tests/e2e/stream.e2e.js` — real yt-dlp against real YouTube, so it only means anything **inside the deployed container**: `docker cp` it in, then `dokku enter music-bot web deno run --allow-all …`. It pulls 1.5MB deliberately: reading only the first 64KB is what let a truncated-stream bug ship.
@@ -31,8 +35,7 @@ deploy/runbook in `docs/DEPLOY.md`.
 ## .env / Dokku config Required Keys
 ```
 BOT_TOKEN=                   # code logs in with BOT_TOKEN only (NOT DISCORD_TOKEN)
-CLIENT_ID=1516232025210753074
-GUILD_ID=414892529427939338
+GUILD_ID=414892529427939338     # which guild the slash commands register to
 TURSO_DATABASE_URL=          # libsql://… — selects Turso adapter (prod DB)
 TURSO_AUTH_TOKEN=            # full-access
 SPOTIFY_CLIENT_ID=           # for /play with Spotify track/playlist/album URLs
@@ -185,7 +188,9 @@ import volume from "@/discord/commands/playback/volume.js";
 Registering is also what puts it in `/help` (rendered from the router's groups), so there is no help
 list to update. Order inside the array is the order `/help` prints.
 
-**3. `deno task deploy`** to register the command with Discord, then `deno task check`.
+**3. `deno task check`.** Registering with Discord happens by itself — the Dokku `postdeploy` hook
+in `app.json` runs `deployCommands.js` on every release. Run `deno task deploy` by hand only to see
+the command before it ships.
 
 Notes:
 - **A duplicate or missing `name` throws at startup**, not silently — the router validates on `include`.
@@ -208,6 +213,14 @@ No build step — Deno runs `src/index.js` directly. `deno.json` defines tasks, 
 CI (`.github/workflows/deploy.yml`) runs on push to `main` (when `src/**/*.js`, `deno.json`, `deno.lock`, `Dockerfile`, or the workflow change), on a **weekly schedule** (Mon 06:00 UTC, keeps yt-dlp fresh), and via `workflow_dispatch`:
 1. Build image on a **native arm64 runner** (`ubuntu-24.04-arm`), push to `ghcr.io/alessandro54/discord-music`
 2. SSH into the Dokku host (`appleboy/ssh-action`) → `sudo dokku git:from-image music-bot <image>:<sha>`
+3. A `prune` job keeps only the **5 most recent GHCR versions** (`actions/delete-package-versions`,
+   max 100 deletions per run). `provenance: false`/`sbom: false` on the build keep that 1 version
+   per build instead of 3 — attestations made buildx push an OCI index plus two untagged children.
+
+Dokku then runs the `postdeploy` hook from **`app.json`** (which the Dockerfile `COPY`s into the
+image — `git:from-image` reads it from there), registering the slash commands. It runs *after* the
+release is live, so a Discord outage turns the deploy red without taking the bot down; the script
+retries 3× first.
 
 Scheduled runs pass a `CACHEBUST` build-arg so the pip layer re-pulls the latest yt-dlp; pushes keep the layer cached for fast builds. The pip install uses `--pre` (nightly) — YouTube extractor fixes land there first and stable trails by weeks, so a stable-only image is effectively stale for exactly the breakage that matters. Check what's actually running with `sudo docker exec music-bot.web.1 yt-dlp --version`.
 
