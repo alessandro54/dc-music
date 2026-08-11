@@ -17,7 +17,7 @@ deploy/runbook in `docs/DEPLOY.md`.
 - ffmpeg — transcode on seek, and for any non-YouTube source (SoundCloud is m4a/AAC over HLS)
 
 ## Bot Info
-- App ID: 1513765585794895872
+- App ID: 1516232025210753074 (bot user `delo` — the only bot in the guild)
 - Token: stored in .env as `BOT_TOKEN`
 - Guild ID: 414892529427939338
 
@@ -31,7 +31,7 @@ deploy/runbook in `docs/DEPLOY.md`.
 ## .env / Dokku config Required Keys
 ```
 BOT_TOKEN=                   # code logs in with BOT_TOKEN only (NOT DISCORD_TOKEN)
-CLIENT_ID=1513765585794895872
+CLIENT_ID=1516232025210753074
 GUILD_ID=414892529427939338
 TURSO_DATABASE_URL=          # libsql://… — selects Turso adapter (prod DB)
 TURSO_AUTH_TOKEN=            # full-access

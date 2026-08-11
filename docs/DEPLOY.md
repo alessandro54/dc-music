@@ -126,7 +126,7 @@ manager).
 ```bash
 sudo dokku config:set music-bot \
   BOT_TOKEN=<discord bot token> \
-  CLIENT_ID=1513765585794895872 \
+  CLIENT_ID=1516232025210753074 \
   GUILD_ID=414892529427939338 \
   OWNER_ID=<discord user id> \
   TURSO_DATABASE_URL=libsql://<your-db>.turso.io \
