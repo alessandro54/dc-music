@@ -49,6 +49,12 @@ jobs:
           context: .
           push: true
           platforms: linux/arm64
+          # Single-platform build, and nothing verifies the attestations. Left on,
+          # buildx pushes an OCI index plus two untagged children (the arm64
+          # manifest and the provenance blob) — three GHCR versions per build
+          # instead of one, which is what let 40 builds become 120 versions.
+          provenance: false
+          sbom: false
           # Scheduled + manually dispatched runs bust the pip-install layer so
           # yt-dlp re-pulls fresh; pushes keep the cache for fast builds.
           build-args: |
@@ -76,3 +82,22 @@ jobs:
           # then fail with "No changes detected". A unique tag per run forces
           # both the pull and the redeploy.
           script: sudo dokku git:from-image music-bot ${{ env.IMAGE }}:${{ github.sha }}-r${{ github.run_id }}
+
+  prune:
+    # Weekly scheduled rebuilds push an image even in weeks with no commits, and
+    # nothing ever deleted the old ones. Gated on `deploy` so a failed release
+    # never prunes the versions it would roll back to.
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      # The package is linked to this repo, so GITHUB_TOKEN suffices — no PAT.
+      # Deleting from GHCR can't disturb the live container: Dokku already
+      # pulled the image to the host and runs from the local copy.
+      - name: Keep only the 5 most recent image versions
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: discord-music
+          package-type: container
+          min-versions-to-keep: 5
