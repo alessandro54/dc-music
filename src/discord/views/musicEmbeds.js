@@ -81,16 +81,36 @@ export function queueEmbed(queue) {
 // null for anything queued by URL before its duration was known.
 const MEDALS = ["🥇", "🥈", "🥉"];
 
-export function leaderboardEmbed(songs) {
-    const lines = songs
+const rankOf = (i) => MEDALS[i] ?? `\`${i + 1}.\``;
+
+// One embed, two sections: who picked the music, then what got played. DJs lead —
+// the people are the draw, the tracklist is the evidence. `djs` may be empty on a
+// server whose history predates the user_id column, in which case the section is
+// dropped rather than rendered blank (an empty field value throws).
+export function leaderboardEmbed(songs, djs = []) {
+    const songLines = songs
         .map((s, i) => {
-            const rank = MEDALS[i] ?? `\`${i + 1}.\``;
             const plays = `${s.plays} play${s.plays !== 1 ? "s" : ""}`;
-            return `${rank} **[${s.title}](${s.url})** \`${s.duration ?? "—"}\` — ${plays}`;
+            return `${rankOf(i)} **[${s.title}](${s.url})** \`${s.duration ?? "—"}\` — ${plays}`;
         })
         .join("\n");
 
-    return embed()
-        .setTitle("🏆 Most Played")
-        .setDescription(lines);
+    const e = embed().setTitle("🏆 Server Leaderboard");
+    if (djs.length) e.addFields({ name: "🎧 Top DJs", value: djLines(djs) });
+    e.addFields({ name: "🎵 Most Played", value: songLines });
+    return e;
+}
+
+// A DJ's score is distinct songs they chose — see getTopDjs for why picks-only and
+// why deduped. Rendered as a mention: it survives a rename, and mentions inside an
+// embed don't ping. userTag is the fallback for a row written before tags, or a
+// member who has since left the server.
+function djLines(djs) {
+    return djs
+        .map((d, i) => {
+            const who = d.userId ? `<@${d.userId}>` : (d.userTag ?? "unknown");
+            const songs = `${d.songs} song${d.songs !== 1 ? "s" : ""}`;
+            return `${rankOf(i)} ${who} — ${songs}`;
+        })
+        .join("\n");
 }

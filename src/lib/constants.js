@@ -8,6 +8,7 @@ export const LIMITS = {
     HISTORY: 10,
     PLAYLIST_MAX: 100,
     LEADERBOARD: 5,
+    DJ_LEADERBOARD: 5,
     POLL_OPTIONS: 5,
     AUTOCOMPLETE_RESULTS: 5,
 };

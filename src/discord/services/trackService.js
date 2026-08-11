@@ -171,6 +171,43 @@ function mergeVariants(rows) {
         .map(({ _top, ...song }) => ({ ...song, url: canonicalUrl(song.url) }));
 }
 
+// Top DJs: who picked the most *different* songs. Two rules, both deliberate:
+//
+//   picks only — a playlist is one action that writes 100 rows, so counting them
+//   would let a single album paste top the chart forever. Same CHOSEN rule
+//   /history and the autocomplete already use.
+//
+//   distinct tracks — someone replaying one song 20 times contributed one song to
+//   the server, not twenty. COUNT(DISTINCT fingerprint) rather than COUNT(*).
+//
+// Grouped by user_id, not user_tag: a rename would otherwise split one person
+// into two DJs. The tag is only for display, so we take the one from their newest
+// pick — MAX(played_at) picks the row, the bare column follows it (same SQLite
+// behaviour getTopSongs relies on).
+//
+// Unlike getTopSongs there is no mergeVariants pass: that folds two *uploads* of a
+// song by title, which needs per-row titles this aggregate has already collapsed.
+// A DJ who picked the official video and a re-upload scores 2 here. Rare, and the
+// fix would mean scanning every row in the guild.
+export async function getTopDjs(guildId, limit = 5) {
+    const db = getDb();
+    if (!db) return [];
+    return await db
+        .select({
+            userId: songHistory.userId,
+            userTag: songHistory.userTag,
+            songs: sql`count(distinct ${FINGERPRINT})`.mapWith(Number),
+            lastPlayedAt: max(songHistory.playedAt),
+        })
+        .from(songHistory)
+        // Legacy rows predate user_id and would group into one phantom "null DJ".
+        .where(and(eq(songHistory.guildId, guildId), CHOSEN, isNotNull(songHistory.userId)))
+        .groupBy(songHistory.userId)
+        // Ties break on recency, matching getTopSongs — stable, not arbitrary.
+        .orderBy(desc(sql`count(distinct ${FINGERPRINT})`), desc(max(songHistory.playedAt)))
+        .limit(limit);
+}
+
 // Metadata of an already-played track — beats re-asking yt-dlp (seconds).
 export async function getSongMeta(url) {
     const db = getDb();
