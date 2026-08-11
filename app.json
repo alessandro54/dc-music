@@ -6,7 +6,7 @@
             {
                 "type": "startup",
                 "name": "connected to Discord",
-                "path": "/health",
+                "command": ["test", "-f", "/tmp/bot-ready"],
                 "attempts": 12,
                 "wait": 5,
                 "initialDelay": 5

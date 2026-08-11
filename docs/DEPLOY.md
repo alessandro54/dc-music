@@ -172,14 +172,23 @@ Notes:
     anyone via client-credentials.
 - Optional: `YOUTUBE_COOKIES` (Netscape cookies if 403s become frequent).
 
-### 6. Disable the zero-downtime health check [server]
+### 6. Enable the zero-downtime health check [server]
 
-The bot has no fast HTTP readiness on boot (Discord login takes a moment), so
-Dokku's default check would fail the first deploy:
+Checks must be **enabled** for `app.json` to be honoured — with them disabled
+Dokku skips the healthcheck entirely and prints *"Zero downtime is disabled,
+stopping currently running containers"*, i.e. the bot goes down mid-track on
+every release and nothing verifies the new one works.
 
 ```bash
-sudo dokku checks:disable music-bot
+sudo dokku checks:enable music-bot
 ```
+
+> Historically this said `checks:disable`, because the bot serves no HTTP and
+> Dokku's default check would fail the first deploy. The `startup` check in
+> `app.json` replaces it: `clientReady` touches `/tmp/bot-ready` and the check is
+> `test -f /tmp/bot-ready` — no listener needed, and it waits for a real Discord
+> login (12 attempts × 5s) rather than for the process to merely exist. A bad
+> `BOT_TOKEN` now fails the release and leaves the old container serving.
 
 ### 7. First deploy + make image public
 
@@ -363,7 +372,8 @@ sudo dokku git:from-image music-bot ghcr.io/alessandro54/discord-music:<old-sha>
 | Deploy job: `denied` / cannot pull image | GHCR package still private → make it public (step 7) or `dokku registry:login`. |
 | `sudo: a password is required` in deploy | sudoers rule missing/wrong path (step 4). Check `which dokku` matches. |
 | `TokenInvalid` / bot builds but never comes online | Wrong/missing `BOT_TOKEN` (must be `BOT_TOKEN`, not `DISCORD_TOKEN`; Reset in Discord Dev Portal, `dokku config:set music-bot BOT_TOKEN='…'`. |
-| First deploy fails on health check | `sudo dokku checks:disable music-bot` (step 6). |
+| Deploy hangs then fails on health check | The bot never reached Discord within 12×5s — check `BOT_TOKEN` and `dokku logs music-bot`. The old container keeps serving, which is the point. |
+| `Zero downtime is disabled` in the deploy log | Checks are off; `sudo dokku checks:enable music-bot` (step 6). The `app.json` healthcheck is ignored while disabled. |
 | `Tini is not running as PID 1` warning | Harmless — yt-dlp reaping is explicit in `streamService.js`, not Tini-dependent. |
 | OOM / bot dies mid-song | yt-dlp child not reaped — see memory notes in `CLAUDE.md`. Ensure VPS has enough RAM/swap. |
 

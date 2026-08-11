@@ -216,6 +216,13 @@ CI (`.github/workflows/deploy.yml`) runs on push to `main` (when `src/**/*.js`, 
    max 100 deletions per run). `provenance: false`/`sbom: false` on the build keep that 1 version
    per build instead of 3 — attestations made buildx push an OCI index plus two untagged children.
 
+`app.json` also carries a **`startup` healthcheck**: `clientReady` touches `/tmp/bot-ready`
+(`READY_FILE`) and Dokku polls `test -f /tmp/bot-ready`, 12 × 5s. No HTTP listener is involved — the
+bot serves none. This is what buys zero-downtime deploys: the old container keeps playing until the
+new one is actually logged into Discord, and a bad token fails the release instead of shipping a bot
+that's up but mute. **Requires `dokku checks:enable music-bot`** — while checks are disabled Dokku
+ignores `app.json` and stops the running container outright.
+
 Dokku then runs the `postdeploy` hook from **`app.json`** (which the Dockerfile `COPY`s into the
 image — `git:from-image` reads it from there), registering the slash commands. It runs *after* the
 release is live, so a Discord outage turns the deploy red without taking the bot down; the script
