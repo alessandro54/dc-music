@@ -11,10 +11,11 @@ push main ──► GitHub Actions ──► build image ──► push GHCR ─
 - **Repo:** `alessandro54/discord-music`
 - **Image:** `ghcr.io/alessandro54/discord-music`
 - **Dokku app:** `music-bot`
-The bot is a Discord **gateway client** and serves **no HTTP at all** — it makes
-only outbound connections. There is no port to expose, no domain to point at it,
-and no reverse-proxy config to keep working. (A control dashboard on `:3000`
-existed and was removed; see "Removed: web dashboard" at the end.)
+The bot is a Discord **gateway client**: all its real work is outbound. The only
+thing it serves is `GET /health` on `:3000` for Dokku's deploy healthcheck
+(`src/lib/health.js`) — no domain points at it and there is no reverse-proxy
+config to keep working. (A control dashboard on the same port existed and was
+removed; see "Removed: web dashboard" at the end.)
 
 ---
 
@@ -23,10 +24,12 @@ existed and was removed; see "Removed: web dashboard" at the end.)
 | File | Role |
 |---|---|
 | `.github/workflows/deploy.yml` | Build → push GHCR → ssh deploy |
-| `Dockerfile` | Deno + ffmpeg + yt-dlp image (no `EXPOSE` — nothing listens) |
+| `Dockerfile` | Deno + ffmpeg + yt-dlp image (`EXPOSE 3000` for the healthcheck only) |
+| `app.json` | Dokku `startup` healthcheck + `postdeploy` slash-command registration |
 
-No build step — Deno runs `src/index.js` directly. Slash commands are **not**
-auto-registered on deploy (run `deno task deploy` locally when they change).
+No build step — Deno runs `src/index.js` directly. Slash commands **are**
+auto-registered on every deploy by the `postdeploy` hook in `app.json`; run
+`deno task deploy` locally only to register them before they ship.
 
 ---
 
@@ -183,12 +186,25 @@ every release and nothing verifies the new one works.
 sudo dokku checks:enable music-bot
 ```
 
-> Historically this said `checks:disable`, because the bot serves no HTTP and
-> Dokku's default check would fail the first deploy. The `startup` check in
-> `app.json` replaces it: `clientReady` touches `/tmp/bot-ready` and the check is
-> `test -f /tmp/bot-ready` — no listener needed, and it waits for a real Discord
-> login (12 attempts × 5s) rather than for the process to merely exist. A bad
-> `BOT_TOKEN` now fails the release and leaves the old container serving.
+> Historically this said `checks:disable`, because Dokku's default check would
+> fail the first deploy. The `startup` check in `app.json` replaces it: Dokku
+> polls `GET /health` on port 3000 (12 attempts × 5s), served by
+> `src/lib/health.js` — one route, no auth, no dashboard. It returns 503 until
+> the Discord client is ready, so the check waits for a real login rather than
+> for the process to merely exist, and a bad `BOT_TOKEN` fails the release and
+> leaves the old container serving.
+>
+> **Do not switch this to a `command` check.** `test -f /tmp/bot-ready` was tried
+> and the `docker-local` scheduler never runs it: the deploy hung past the
+> ssh-action's 600s timeout, and the orphaned Dokku process kept holding the app
+> lock so every later `dokku` command hung until `sudo pkill -f "from-image
+> music-bot"`. Recovery, if it ever happens again:
+>
+> ```bash
+> sudo pkill -f "from-image music-bot"
+> sudo docker rm -f music-bot.web.1.upcoming-<id>   # orphaned second instance
+> sudo dokku checks:disable music-bot               # unblock deploys
+> ```
 
 ### 7. First deploy + make image public
 

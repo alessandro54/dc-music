@@ -6,10 +6,12 @@
             {
                 "type": "startup",
                 "name": "connected to Discord",
-                "command": ["test", "-f", "/tmp/bot-ready"],
+                "description": "GET /health — 200 once the gateway client is ready, 503 while connecting",
+                "path": "/health",
+                "port": 3000,
                 "attempts": 12,
                 "wait": 5,
-                "initialDelay": 5
+                "timeout": 5
             }
         ]
     },

@@ -226,12 +226,21 @@ CI (`.github/workflows/deploy.yml`) runs on push to `main` (when `src/**/*.js`, 
    max 100 deletions per run). `provenance: false`/`sbom: false` on the build keep that 1 version
    per build instead of 3 — attestations made buildx push an OCI index plus two untagged children.
 
-`app.json` also carries a **`startup` healthcheck**: `clientReady` touches `/tmp/bot-ready`
-(`READY_FILE`) and Dokku polls `test -f /tmp/bot-ready`, 12 × 5s. No HTTP listener is involved — the
-bot serves none. This is what buys zero-downtime deploys: the old container keeps playing until the
-new one is actually logged into Discord, and a bad token fails the release instead of shipping a bot
-that's up but mute. **Requires `dokku checks:enable music-bot`** — while checks are disabled Dokku
-ignores `app.json` and stops the running container outright.
+`app.json` also carries a **`startup` healthcheck**: Dokku polls `GET /health` on port 3000, 12 × 5s.
+`src/lib/health.js` serves that one route and nothing else (`EXPOSE 3000` exists for it alone) —
+**it is not the dashboard returning**. 200 only once `client.isReady()`, 503 while connecting, which
+is the part that buys zero-downtime: the old container keeps playing until the new one is genuinely
+logged into Discord, so a bad token fails the release instead of shipping a bot that's up but mute.
+**Requires `dokku checks:enable music-bot`** — while checks are disabled Dokku ignores `app.json` and
+stops the running container outright.
+
+**A `command`-type check does not work here and must not be reinstated.** `test -f /tmp/bot-ready`
+was tried first: the `docker-local` scheduler *announces* the check and then never runs it, so the
+deploy hung until `appleboy/ssh-action` hit its 600s `Run Command Timeout` — and the Dokku process
+kept looping on the host afterwards, holding the app lock so that every later `dokku` command hung
+too, needing a manual `pkill`. Dokku's own docs are the warning: "healthcheck implementation depends
+on the specific scheduler plugin in use, and not all plugins support every available configuration
+option." `path` is this scheduler's supported mode. `initialDelay` is unsupported here as well.
 
 Dokku then runs the `postdeploy` hook from **`app.json`** (which the Dockerfile `COPY`s into the
 image — `git:from-image` reads it from there), registering the slash commands. It runs *after* the

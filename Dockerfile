@@ -56,5 +56,9 @@ COPY app.json ./
 ENV NODE_ENV=production \
     YTDLP_PATH=/usr/local/bin/yt-dlp
 
+# Readiness endpoint only (src/lib/health.js) — Dokku's deploy healthcheck polls
+# it. Not the dashboard coming back; nothing else is served on this port.
+EXPOSE 3000
+
 
 CMD ["deno", "run", "--allow-all", "--cached-only", "src/index.js"]

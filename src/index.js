@@ -6,6 +6,7 @@ import guildMemberAdd from "@/discord/events/guildMemberAdd.js";
 import interactionCreate from "@/discord/events/interactionCreate.js";
 import ready from "@/discord/events/ready.js";
 import { COMMIT, COMMIT_URL } from "@/lib/buildInfo.js";
+import { startHealthServer } from "@/lib/health.js";
 import { log } from "@/lib/logger.js";
 // Importing sentry.js runs Sentry.init — it happens during module evaluation,
 // before any of the code below can throw.
@@ -78,6 +79,11 @@ setClient(client);
 // to YouTube thumbnails. This only removes the token fetch from the first
 // artwork lookup's critical path.
 warmToken().catch((err) => log.warn(`spotify token warm-up failed: ${err.message}`));
+
+// Started before login on purpose, so the port is already answering 503 while
+// Discord connects — Dokku's healthcheck needs something to poll from the moment
+// the container starts, not once the bot is up.
+startHealthServer(Deno.env.get("PORT") || 3000, client);
 
 client.login(Deno.env.get("BOT_TOKEN"));
 

@@ -13,11 +13,6 @@ export const LIMITS = {
     AUTOCOMPLETE_RESULTS: 5,
 };
 
-// Touched by the clientReady handler, polled by Dokku's startup healthcheck.
-// /tmp is per-container, so a restarted container starts unready — which is the
-// point: the file means "this process reached Discord", not "this app once did".
-export const READY_FILE = "/tmp/bot-ready";
-
 export const TIMEOUTS = {
     QUEUE_IDLE_MS: 30_000,
     VOICE_RECONNECT_MS: 5_000,
