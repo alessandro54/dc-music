@@ -253,8 +253,8 @@ function _ytdlpStream(url, seekSeconds, onDuration = null, { useCookies = true, 
     // watchdog skips it). Drain stderr and report a non-zero exit so the actual
     // cause (expired cookies, 403, format gone) lands in Sentry instead of
     // scrolling past in the logs.
+    const tail = [];
     (async () => {
-        const tail = [];
         for await (const chunk of ytdlp.stderr) {
             const msg = dec.decode(chunk).trim();
             if (!msg) continue;
@@ -268,8 +268,17 @@ function _ytdlpStream(url, seekSeconds, onDuration = null, { useCookies = true, 
         // This stream is already lost (the watchdog will skip it), but the next
         // track can avoid the same fate.
         if (usedProxy) markProxyBad(`stream exited ${status.code}`);
+        // The cookie-free attempt is *expected* to fail on ~25% of unseen videos
+        // — that miss is the whole reason the cookie path exists, and the caller
+        // retries immediately. Reporting it made one failed play emit two Sentry
+        // issues, with no way to tell a recovered miss from a dead track. Only
+        // the authenticated attempt, which has no fallback behind it, is news.
+        if (!useCookies) {
+            log.warn(`[stream] fast path exited ${status.code}: ${tail[tail.length - 1] ?? "no stderr"}`);
+            return;
+        }
         captureError(new Error(`yt-dlp exited ${status.code}: ${tail[tail.length - 1] ?? "no stderr"}`), {
-            tags: { stage: "ytdlp", exitCode: String(status.code) },
+            tags: { stage: "ytdlp", exitCode: String(status.code), useCookies: "true" },
             extra: { url, seekSeconds, stderr: tail.join("\n") },
         });
     })();
@@ -308,6 +317,7 @@ function _ytdlpStream(url, seekSeconds, onDuration = null, { useCookies = true, 
             inputType: StreamType.Arbitrary,
             procs: [ytdlp, ffmpeg],
             lead: ffmpeg,
+            stderrTail: tail,
             cleanup: () => durationWatch?.stop(),
         };
     }
@@ -317,6 +327,7 @@ function _ytdlpStream(url, seekSeconds, onDuration = null, { useCookies = true, 
         inputType: StreamType.WebmOpus,
         procs: [ytdlp],
         lead: ytdlp,
+        stderrTail: tail,
         cleanup: () => durationWatch?.stop(),
     };
 }
@@ -329,6 +340,23 @@ async function _verifiedStream(url, seekSeconds, onDuration, opts) {
     if (!verified) {
         spawned.cleanup();
         await Promise.all(spawned.procs.map((p) => reap(p)));
+        // The authenticated attempt is the last one, so its failure is what the
+        // listener hears. It is also the one the stderr watcher above can't
+        // report: giving up on first byte means *we* kill the extractor, and a
+        // signalled exit is indistinguishable there from a skip. Reporting it
+        // here is what makes a hung cookie path visible at all — previously it
+        // reached Sentry only as a bare "stream produced no audio".
+        if (opts.useCookies) {
+            captureError(new Error("cookie path produced no audio"), {
+                tags: { stage: "stream", useCookies: "true" },
+                extra: {
+                    url,
+                    seekSeconds,
+                    timeoutMs: FIRST_BYTE_TIMEOUT_MS,
+                    stderr: spawned.stderrTail.join("\n") || "no stderr",
+                },
+            });
+        }
         return null;
     }
     const resource = createAudioResource(Readable.fromWeb(verified), { inputType: spawned.inputType });

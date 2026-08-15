@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/deno";
 
 import { COMMIT } from "@/lib/buildInfo.js";
+import { UserFacingError } from "@/lib/errors.js";
 import { log } from "@/lib/logger.js";
 
 const DSN = Deno.env.get("SENTRY_DSN");
@@ -22,6 +23,10 @@ const IGNORED_DISCORD_CODES = new Set([10062, 40060]);
 
 function isNoise(err) {
     if (!err) return false;
+    // Bad input, not a bug — and filtered here rather than at each call site so
+    // no path can leak one back in (queued Spotify tracks resolve inside
+    // GuildQueue, far from the command that started them).
+    if (err instanceof UserFacingError) return true;
     if (IGNORED_DISCORD_CODES.has(err.code)) return true;
     return TEARDOWN_RE.test(err.message ?? String(err));
 }

@@ -1,5 +1,6 @@
 import { Innertube } from "youtubei.js";
 
+import { UserFacingError } from "@/lib/errors.js";
 import { fmtSecs, ytThumb } from "@/lib/media.js";
 
 // In-process YouTube client. Search is the only thing it is reliably good for on
@@ -27,6 +28,6 @@ export async function searchVideos(query, limit = 5) {
 
 export async function searchVideo(query) {
     const [first] = await searchVideos(query, 1);
-    if (!first) throw new Error(`no results for "${query}"`);
+    if (!first) throw new UserFacingError(`No results for **${query}**.`);
     return first;
 }

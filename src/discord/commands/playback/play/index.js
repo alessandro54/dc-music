@@ -4,6 +4,7 @@ import { resolveQuery } from "@/discord/resolvers/index.js";
 import { defineCommand } from "@/discord/router.js";
 import { enqueue, getOrCreateQueue } from "@/discord/services/playbackService.js";
 import { playlistQueued, trackQueued } from "@/discord/views/musicEmbeds.js";
+import { UserFacingError } from "@/lib/errors.js";
 import { log } from "@/lib/logger.js";
 import { captureError, userFrom } from "@/lib/sentry.js";
 
@@ -53,6 +54,13 @@ export default defineCommand({
                 resolved = await pending;
             }
         } catch (err) {
+            // The message was written for whoever typed the query — showing the
+            // generic refusal instead threw away the one thing that told them
+            // what to do differently.
+            if (err instanceof UserFacingError) {
+                log.warn(`[play] ${err.message}`);
+                return respond(interaction, placeholder, err.message);
+            }
             log.error(`[play] resolve: ${err.message}`);
             captureError(err, {
                 tags: { stage: "resolve", command: "play", guild: interaction.guildId },
