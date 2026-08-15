@@ -82,8 +82,8 @@ src/
     commands.js  the route table — every command imported and grouped here, and nowhere else
     router.js    defineCommand (route + guard middleware) and createRouter (grouping)
     commands/  slash-command handlers — parse interaction → call service → render view → reply.
-               Grouped by nature: playback/ (play/, controls (pause/resume/skip/stop), seek,
-               queue, np, history), tracks/ (leaderboard), moderation/ (kick, timeout),
+               Grouped by nature: playback/ (play/, controls (pause/resume/skip/stop), previous,
+               seek, queue, np, history), tracks/ (leaderboard), moderation/ (kick, timeout),
                fun/ (coinflip, poll, pokemon), admin/ (debug, setcookies, setup),
                info/ (help, serverinfo)
     events/    discord event handlers
@@ -110,13 +110,14 @@ src/
                where it was 110 inline lines; it touches queue internals on purpose. Changes when
                *playback transitions* change, while guildQueue.js changes when the queue's shape does
     guildQueue.js  the GuildQueue **entity** — one guild's playback state machine (song list,
-               audio player, stall watchdog, idle timeout). Deliberately *not* a service and not
+               played stack, audio player, the timers). Deliberately *not* a service and not
                in services/: it owns per-guild state, one instance per active guild. It holds no
                module globals — it reports up via `onDestroy`/`onChange` callbacks, and
                playbackService owns the registry and the presence those callbacks drive
   db/          persistence: client (adapter pick + migrate on boot), schema, migrations/
   lib/         importable by any layer, knows nothing about the app: logger, sentry, config,
-               constants, utils (formatting), media (url/duration helpers), buildInfo
+               constants, utils (formatting), media (url/duration helpers), buildInfo,
+               errors (UserFacingError)
 ```
 
 `lib/` means "no domain knowledge, no I/O boundary" — if a file imports `discord.js` or owns a
@@ -307,6 +308,54 @@ they share (`extractVideoId`, `isYouTubeUrl`, `ytThumb`, `trackKey`, `fmtSecs`).
 - **EJS comes from the image, not from GitHub.** The Dockerfile installs `yt-dlp[default]`, whose dependency group pins `yt-dlp-ejs` to the exact version yt-dlp requires (bare `pip install yt-dlp` declares *no* dependencies at all). `--remote-components ejs:github` is the alternative to that package, not a companion — measured with the package installed, the flag still fetched from GitHub: **9.08s cold vs 2.06s** using the local copy. The container has no volume, so every deploy is a cold cache, and a GitHub outage would have meant no audio. Don't re-add the flag.
 - `/data/ytdlp-cache` is a **Dokku bind-mount** (`dokku storage:mount music-bot /var/lib/dokku/data/storage/music-bot-ytdlp-cache:/data/ytdlp-cache`) so yt-dlp's player/sigfunc cache survives deploys. Without it every release started cold.
 - Playback is sequential — only one yt-dlp alive at a time. Albums/playlists are a metadata queue (`GuildQueue.songs`); Spotify tracks resolve to YouTube lazily in `_playNext`.
+
+## Leaving & Going Back (`guildQueue.js`, `events/voiceStateUpdate.js`)
+
+Two timers, both in `TIMEOUTS`, both deliberately grace periods rather than instants:
+
+- **`QUEUE_IDLE_MS` (5 min)** — armed by `_advance()` when the queue runs dry. It was 30s, which
+  made the bot vanish between songs while someone picked the next one.
+- **`ALONE_LEAVE_MS` (2 min)** — armed by `markAlone()` when the last non-bot member leaves the
+  bot's own channel, cancelled by `markNotAlone()`. `voiceStateUpdate` only reacts to events
+  touching that channel; everything else is noise. **The grace period is the point**: a client
+  reconnect or a channel hop reads as a momentarily empty channel, and destroying the queue for
+  that loses the whole song list.
+
+Failure paths call `_advance({ idleTimer: false })` — running *out* of songs starts the leave
+countdown, failing out of them doesn't.
+
+`/previous` is backed by `queue.played`, an in-memory stack (cap `LIMITS.PLAYED_HISTORY`) filled
+by the Idle handler from the track it shifts off. It is **not** `/history`, which is the DB record;
+this dies with the queue. `previous()` unshifts the popped track in front of the current one, so
+previous → skip returns you where you were, and has two paths: playing (set `_replaying`, then
+`player.stop()` — without the flag the resulting Idle would shift the restored track straight back
+off) and already-idle inside the grace window (`stop()` emits no Idle at all, so call `_playNext`
+directly). A track that *errored* is dropped rather than remembered.
+
+**Buttons** (`discord/buttons.js`) are `np:<action>`, routed through an `ACTIONS` table with a
+same-voice-channel guard — they never reach `router.js`, so the guard cannot come from there.
+`np:pause` toggles: `nowPlayingControls` renders ▶️ once paused, and calling `pause()`
+unconditionally left `/resume` as the only way out. Known wart: the re-render happens before the
+queue advances, so the embed briefly shows the outgoing track — fixing it means rendering from
+`onChange` instead of inline.
+
+## What Reaches Sentry
+
+`captureError` is filtered by `isNoise` in `lib/sentry.js`, which is the single choke point:
+
+- **`UserFacingError`** (`lib/errors.js`) — a search with no results, a Spotify playlist the app
+  can't read. Bad input, not a bug. Filtered centrally *because* queued Spotify tracks resolve
+  deep inside `GuildQueue`, far from the command that started them, so a per-call-site check leaks
+  them back in. `/play` shows the message instead of its generic refusal.
+- **Teardown noise** (`TEARDOWN_RE`) and expired-interaction Discord codes.
+- **The cookie-free fast attempt** — its non-zero exit is *expected* on ~25% of unseen videos and
+  the caller retries immediately, so `streamService` logs it and returns. One failed play used to
+  emit two issues with no way to tell a recovered miss from a dead track. Only the authenticated
+  attempt captures, tagged `useCookies`.
+- The inverse needed adding: when the cookie attempt yields no first byte, *we* kill the extractor,
+  and a signalled exit is indistinguishable from a user skip in the stderr watcher. `_verifiedStream`
+  reports that case explicitly with the stderr tail, or it would only ever surface as a bare
+  "stream produced no audio".
 
 ## Enqueue Performance
 `/play` → embed is `resolveQuery`. Three log lines make it measurable — don't guess, read them:

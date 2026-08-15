@@ -29,14 +29,15 @@ The result: ~5% CPU instead of 50%. No quality loss. No added latency.
 
 ## Features
 
-- Play from YouTube (URL, search, playlist) or Spotify (track, album, playlist)
-- Queue with position tracking, skip, seek, pause/resume, stop
-- `/np` — now playing embed with album art + inline buttons
+- Play from YouTube (URL, search, playlist), Spotify (track, album, playlist) or SoundCloud (track, set)
+- Queue with position tracking, skip, previous, seek, pause/resume, stop
+- `/np` — now playing embed with album art + inline buttons (⏮ ⏯ ⏭ ⏹), restricted to listeners in the channel
 - Autocomplete returns live YouTube video results (title + duration); recent history when empty
-- Song history (SQLite by default)
+- Song history and a play leaderboard, deduplicated per track across every way it was queued
+- Sensible leaving: stays 5 minutes after the queue empties, 2 minutes after the last human leaves
 - Per-guild config (welcome channel, rules channel) via `/setup`
 - `/debug` — owner-gated health snapshot (memory, live streams, queue state)
-- Resilient playback: stall watchdog skips a hung stream; auto-retries transient 403s
+- Resilient playback: stall watchdog retries a hung stream on the authenticated path, then skips it
 
 ---
 
@@ -53,7 +54,6 @@ The result: ~5% CPU instead of 50%. No quality loss. No added latency.
 ```env
 # .env
 BOT_TOKEN=your_bot_token
-CLIENT_ID=your_application_id
 GUILD_ID=your_server_id
 
 # Optional — Spotify support
@@ -62,6 +62,10 @@ SPOTIFY_CLIENT_SECRET=
 
 # Optional — override default SQLite path (./bot.db)
 # DB_URL=sqlite:./custom.db
+
+# Optional — Turso instead of a local file (takes precedence over DB_URL)
+# TURSO_DATABASE_URL=
+# TURSO_AUTH_TOKEN=
 
 # Optional — restrict /debug to a single Discord user id (admin-only otherwise)
 OWNER_ID=
@@ -84,10 +88,16 @@ deno task dev      # local dev with auto-restart
 ## Deployment
 
 Push to `main` — GitHub Actions builds an arm64 image, pushes it to GHCR, and SSHes into
-the Dokku host to release it. Slash commands are registered with `deno task deploy`.
+the Dokku host to release it. Slash commands register themselves: Dokku runs `deno task
+deploy` from the `postdeploy` hook in `app.json` on every release, so a new command ships
+with the code that defines it.
+
+A release is gated on a `GET /health` check that only returns 200 once the bot is logged
+into Discord — the old container keeps playing until the new one is genuinely connected,
+so a bad token fails the deploy instead of shipping a bot that is up but mute.
 
 **Required GitHub secret:** `DOKKU_SSH_KEY` (in the `production` environment)  
-**Required host config:** `BOT_TOKEN`, `CLIENT_ID`, `GUILD_ID`  
+**Required host config:** `BOT_TOKEN`, `GUILD_ID`  
 **Optional host config:** `SPOTIFY_*`, `TURSO_*`, `OWNER_ID`, `YOUTUBE_COOKIES`, `SENTRY_DSN`
 
 Set them with `dokku config:set music-bot KEY=…`. Full runbook: [`docs/DEPLOY.md`](docs/DEPLOY.md).
@@ -99,14 +109,16 @@ Set them with `dokku config:set music-bot KEY=…`. Full runbook: [`docs/DEPLOY.
 ### Music
 | Command | Description |
 |---------|-------------|
-| `/play <query>` | YouTube URL/search, Spotify track/album/playlist |
-| `/np` | Now playing with pause/skip/stop buttons |
+| `/play <query>` | YouTube URL/search, Spotify track/album/playlist, SoundCloud track/set |
+| `/np` | Now playing, with previous/pause/skip/stop buttons |
 | `/queue` | Current queue |
 | `/skip` | Skip current song |
+| `/previous` | Go back to the previous song (current one returns to the front of the queue) |
 | `/seek <position>` | Seek to timestamp (`1:30` or `90`) |
 | `/pause` / `/resume` | Pause or resume |
 | `/stop` | Stop and clear queue |
-| `/history` | Last 10 songs played |
+| `/history` | Last 10 songs deliberately picked (playlist tracks excluded) |
+| `/leaderboard` | Most-played tracks |
 
 ### Server
 | Command | Description |
@@ -120,9 +132,11 @@ Set them with `dokku config:set music-bot KEY=…`. Full runbook: [`docs/DEPLOY.
 |---------|-------------|
 | `/poll <question>` | Create a reaction poll |
 | `/coinflip` | Flip a coin |
+| `/pokemon` | Random Pokémon sprite |
 | `/kick` / `/timeout` | Moderation |
 | `/serverinfo` | Server stats |
 | `/debug` | Health snapshot — memory, live streams, queue state (owner/admin only) |
+| `/setcookies` | Hot-reload YouTube cookies from an uploaded cookies.txt (owner only) |
 | `/help` | All commands |
 
 ---
@@ -137,7 +151,7 @@ Set them with `dokku config:set music-bot KEY=…`. Full runbook: [`docs/DEPLOY.
 | Search | youtubei.js (Innertube), in-process |
 | Metadata | raced: history row · Innertube · oEmbed → yt-dlp fallback |
 | Streaming | yt-dlp (pip, nightly channel) |
-| Database | @db/sqlite (Deno-native) or Turso (libsql) |
+| Database | Drizzle ORM over @libsql/client — local file, or Turso over HTTP |
 | Build | No build step — Deno runs src/ directly |
 | CI/CD | GitHub Actions (arm64) → GHCR → Dokku |
 
@@ -190,13 +204,24 @@ Layered — commands are thin controllers; logic lives in services, rendering in
 
 ```
 src/
-  commands/   slash-command handlers (parse → service → view → reply)
-  events/     discord event handlers
-  services/   music/ (guildQueue, stream, spotify, resolver, playback), health
-  views/      embed builders
-  lib/        guards, utils, db, embeds, constants, logger, server, sentry
+  index.js      the boot sequence, and nothing else
+  bootstrap.js  process handlers, Sentry.init, yt-dlp path — imported first, on purpose
+  discord/      everything that knows about discord.js
+    commands.js / events.js   the two route tables; nothing scans the filesystem
+    client.js / shutdown.js   client construction, signal handling
+    commands/   slash-command handlers (parse → service → view → reply)
+    resolvers/  /play input → songs, one module per source
+    services/   ytdlp, metadata, innertube, stream, playback, spotify, artwork, tracks
+    views/      embed builders
+    guildQueue.js + queuePlayerEvents.js   one guild's playback state machine
+  db/           drizzle schema, migrations, client
+  lib/          logger, sentry, config, constants, media/url helpers, errors
 ```
 
+- **Leaving on purpose:** the queue emptying starts a 5-minute timer, and the last human
+  leaving the voice channel starts a 2-minute one. Both are grace periods, not instants — a
+  client reconnect reads as an empty channel, and tearing the queue down for that would lose
+  the song list.
 - **Search vs playback split:** `searchVideo` uses Innertube (in-process); `createStream` uses
   yt-dlp. Innertube can't reliably decipher stream URLs in Deno, so yt-dlp stays for playback.
 - **Raced metadata:** `fetchVideoInfo` hits an in-memory cache, then races the song-history row,
@@ -219,6 +244,8 @@ deno task dev                  # run with auto-restart
 deno task start                # run without watch
 deno task deploy               # register slash commands
 deno task test                 # unit tests (stubbed, no network)
+deno task check                # fmt --check + lint + type check
+deno task lint:fix             # includes the import sorter (a local lint plugin)
 ```
 
 ---
