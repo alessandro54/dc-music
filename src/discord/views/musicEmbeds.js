@@ -52,6 +52,10 @@ export function nowPlayingEmbed(queue) {
 export function nowPlayingControls(queue) {
     const isPaused = queue.player.state.status === AudioPlayerStatus.Paused;
     return new ActionRowBuilder().addComponents(
+        // Disabled rather than hidden when there's nothing to go back to: a row
+        // that changes width between renders is worse than a dead button.
+        new ButtonBuilder().setCustomId("np:previous").setEmoji("⏮️").setStyle(ButtonStyle.Secondary)
+            .setDisabled(queue.played.length === 0),
         new ButtonBuilder().setCustomId("np:pause").setEmoji(isPaused ? "▶️" : "⏸️").setStyle(
             ButtonStyle.Secondary,
         ),

@@ -1,41 +1,14 @@
 import { MessageFlags } from "discord.js";
 
-import { queues } from "@/discord/services/playbackService.js";
-import { nowPlayingControls, nowPlayingEmbed } from "@/discord/views/musicEmbeds.js";
+import { handleNowPlayingButton, NP_PREFIX } from "@/discord/buttons.js";
 import { log } from "@/lib/logger.js";
 import { captureError, userFrom } from "@/lib/sentry.js";
 
 export default {
     name: "interactionCreate",
     async execute(interaction, client) {
-        if (interaction.isButton() && interaction.customId.startsWith("np:")) {
-            const queue = queues.get(interaction.guildId);
-            const action = interaction.customId.split(":")[1];
-
-            if (!queue?.playing) {
-                return interaction.update({
-                    content: "Nothing playing.",
-                    embeds: [],
-                    components: [],
-                });
-            }
-
-            if (action === "pause") queue.pause();
-            else if (action === "skip") queue.skip();
-            else if (action === "stop") queue.stop();
-
-            if (action === "stop" || !queue.current) {
-                return interaction.update({
-                    content: "⏹️ Stopped.",
-                    embeds: [],
-                    components: [],
-                });
-            }
-
-            return interaction.update({
-                embeds: [nowPlayingEmbed(queue)],
-                components: [nowPlayingControls(queue)],
-            });
+        if (interaction.isButton() && interaction.customId.startsWith(NP_PREFIX)) {
+            return handleNowPlayingButton(interaction);
         }
 
         const command = client.commands.get(interaction.commandName);

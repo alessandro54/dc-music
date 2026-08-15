@@ -34,8 +34,9 @@ deploy/runbook in `docs/DEPLOY.md`.
   bare specifiers, blank line, then `@/`, alphabetical within each group. **Two kinds of import are pinned
   and never move**: one with a comment above it (the comment explains the position, and sorting would
   strand it) and a side-effect import (`import "x"`). That exists because order here is not always
-  cosmetic — `@/lib/sentry.js` runs `Sentry.init` on evaluation, and `src/index.js` deliberately imports it
-  ahead of the service modules whose top-level code it is meant to capture. `deno task check` now fails on
+  cosmetic — `@/lib/sentry.js` runs `Sentry.init` on evaluation, and `src/index.js` deliberately imports
+  `@/bootstrap.js` (which pulls in sentry) ahead of the service modules whose top-level code it is
+  meant to capture. `deno task check` now fails on
   unsorted imports, so run `lint:fix` before it.
 - `deno task fmt` / `deno task lint` / `deno task check` — **`deno fmt` + `deno lint`, no Biome.** Biome was config-only (nothing installed it, no CI step, no task), so it was deleted; the `biome-ignore` pragma in `spriteImageService.js` became a `deno-lint-ignore`. `fmt` is scoped to `src/`, `tests/`, `scripts/`, `drizzle.config.js` with `indentWidth: 4` / `lineWidth: 110` to match the existing style — **Markdown and YAML are deliberately out of scope** (`deno fmt` prose-reflows `.md`, which was 879 diff lines across the docs). `src/db/migrations/` is excluded too. `require-await` is off: `async execute` is the handler contract (the dispatcher awaits every one), so the rule flags convention, not bugs.
 - `deno task test` — `tests/music/` (duration sidecar, spawn lifecycle, fast-path fallback). Stubs `Deno.Command`, no network. The three stale `bun:test` files were deleted; they had not been runnable since the `services/` move.
@@ -68,7 +69,16 @@ Three top-level dirs, each with a rule for what belongs in it:
 
 ```
 src/
+  index.js     boot script only: initDb → createClient → warm token → health server →
+               shutdown handlers → login. Nothing else belongs here
+  bootstrap.js side-effect module imported *first* by index.js: process error handlers,
+               Sentry.init (via lib/sentry.js), yt-dlp binary path + PATH. Ordering is
+               load-bearing — `ytdlpService` reads `YTDLP_PATH` at module scope, so setting
+               it after the imports would be too late
   discord/     the Discord domain — everything that knows about discord.js
+    client.js    createClient() — intents, cache limits, command collection, registerEvents, setClient
+    events.js    the event table — every event handler imported and listed here, and nowhere else
+    shutdown.js  installShutdownHandlers(client) — SIGTERM/SIGINT: destroy queues, reap yt-dlp, logout
     commands.js  the route table — every command imported and grouped here, and nowhere else
     router.js    defineCommand (route + guard middleware) and createRouter (grouping)
     commands/  slash-command handlers — parse interaction → call service → render view → reply.
@@ -92,6 +102,13 @@ src/
                it orchestrates them (streamService, spotifyService), so it isn't one itself
     views/     response/embed builders (musicEmbeds, healthEmbed, embeds)
     guards.js  interaction guards (ensureVoice etc.)
+    buttons.js component routes — the `np:<action>` table behind the Now Playing buttons,
+               plus the same-voice-channel check. Buttons are not commands: they never
+               reach the router, so their guard lives here
+    queuePlayerEvents.js  the AudioPlayer transitions for one GuildQueue (stall watchdog,
+               first-audio timing, advance-on-Idle, player error). Split out of the constructor,
+               where it was 110 inline lines; it touches queue internals on purpose. Changes when
+               *playback transitions* change, while guildQueue.js changes when the queue's shape does
     guildQueue.js  the GuildQueue **entity** — one guild's playback state machine (song list,
                audio player, stall watchdog, idle timeout). Deliberately *not* a service and not
                in services/: it owns per-guild state, one instance per active guild. It holds no
@@ -208,7 +225,8 @@ Notes:
 - Owner-only tooling goes in the `admin` group: set `permissions` *and* `guard: requireOwner`. The group
   is `hidden`, so it stays out of `/help`.
 - No `client` parameter — use `interaction.client`.
-- **Events are still registered in `src/index.js` by hand**; only commands go through the router.
+- **Events are registered in `src/discord/events.js` by hand** (import + add to the `events` array);
+  only commands go through the router.
 
 **Events** (`src/discord/events/*.js`) — each file exports default `{ name, once?, execute }`:
 - `name` — Discord.js event name

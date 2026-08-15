@@ -11,10 +11,12 @@ export const LIMITS = {
     DJ_LEADERBOARD: 5,
     POLL_OPTIONS: 5,
     AUTOCOMPLETE_RESULTS: 5,
+    PLAYED_HISTORY: 25, // per-guild in-memory undo stack behind /previous
 };
 
 export const TIMEOUTS = {
-    QUEUE_IDLE_MS: 30_000,
+    QUEUE_IDLE_MS: 300_000, // stay in the channel this long after the queue empties
+    ALONE_LEAVE_MS: 120_000, // leave once the last human has been gone this long
     VOICE_RECONNECT_MS: 5_000,
     STREAM_STALL_MS: 25_000, // skip if a track stays buffering this long (yt-dlp stalled)
 };

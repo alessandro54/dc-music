@@ -1,3 +1,4 @@
+import { searchVideo } from "@/discord/services/innertubeService.js";
 import {
     getAlbum,
     getAlbumTracks,
@@ -6,6 +7,7 @@ import {
     getTrack,
 } from "@/discord/services/spotifyService.js";
 import { LIMITS } from "@/lib/constants.js";
+import { UserFacingError } from "@/lib/errors.js";
 import { formatMs } from "@/lib/utils.js";
 
 // Spotify injects an optional locale segment (e.g. /intl-es/) before the type.
@@ -51,7 +53,7 @@ export default {
                 // what to try in /play, which the API client has no business
                 // knowing about.
                 if (err.message.includes("403")) {
-                    throw new Error(
+                    throw new UserFacingError(
                         "Can't read this playlist — Spotify only allows this bot to read playlists owned by its connected account. Try a track or album link, or a YouTube playlist instead.",
                     );
                 }
@@ -80,6 +82,23 @@ export default {
         throw new Error("Unsupported Spotify URL");
     },
 };
+
+// The other half of the lazy resolution `trackToSong` sets up: a queued Spotify
+// song has no playable url until it is about to play. Finding the YouTube video
+// for it belongs to the resolver that decided to defer, not to the queue that
+// happens to notice — GuildQueue only asks "is this song playable yet?".
+// Returns a playable song; the caller handles a throw as a failed track.
+export async function hydrate(song) {
+    const { name, artists } = song.spotifyTrack;
+    const info = await searchVideo(`${name} ${artists[0].name}`);
+    return {
+        ...song,
+        url: info.url,
+        title: info.title,
+        duration: info.duration,
+        spotifyTrack: null,
+    };
+}
 
 // Title + duration for one track, for the /play autocomplete label. Null for
 // playlist/album URLs — they have no single track to describe.
