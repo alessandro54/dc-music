@@ -1,0 +1,29 @@
+version: 2
+
+# Deno is not a Dependabot ecosystem — deno.json / deno.lock are updated by hand
+# (`deno outdated`). What is covered here is everything the deploy pipeline pins:
+# the action versions in deploy.yml and the base image in the Dockerfile.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(docker)"
