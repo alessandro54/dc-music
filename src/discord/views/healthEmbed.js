@@ -1,5 +1,5 @@
 import { embed } from "@/discord/views/embeds.js";
-import { COMMIT, COMMIT_URL } from "@/lib/buildInfo.js";
+import { COMMIT } from "@/lib/buildInfo.js";
 
 function fmtUptime(s) {
     const d = Math.floor(s / 86400);
@@ -25,11 +25,7 @@ export function healthEmbed(h) {
             { name: "Live streams", value: `${h.streams}`, inline: true },
             { name: "Ping", value: `${h.ping} ms`, inline: true },
             { name: "Uptime", value: fmtUptime(h.uptimeS), inline: true },
-            {
-                name: "Revision",
-                value: COMMIT_URL ? `[\`${COMMIT}\`](${COMMIT_URL})` : `\`${COMMIT}\``,
-                inline: true,
-            },
+            { name: "Revision", value: `\`${COMMIT}\``, inline: true },
             { name: "Queues", value: queueLines },
         );
 }

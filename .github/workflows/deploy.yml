@@ -32,7 +32,6 @@ jobs:
       - name: Write build info
         run: |
           echo "export const COMMIT = '${{ github.sha }}';" > src/lib/buildInfo.js
-          echo "export const COMMIT_URL = 'https://github.com/${{ github.repository }}/commit/${{ github.sha }}';" >> src/lib/buildInfo.js
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
