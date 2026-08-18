@@ -494,6 +494,26 @@ symptom ("Sign in to confirm") reads as extractor breakage.
   took it).
 - `ok: null` means the probe itself was inconclusive and is **never** reported as expired. Crying wolf
   about live cookies sends someone re-exporting for nothing.
+- **`startCookieWatch()` re-checks every 6h** (`TIMEOUTS.COOKIE_CHECK_MS`), because the boot check alone
+  misses what actually happened: the session rotated 20h into an uptime and nothing noticed until the
+  next restart. It reports the **transition** only — a jar dead for a day must not file an issue every
+  tick — and `logCookieHealth()` primes the baseline so a jar already dead at boot doesn't double-report.
+  `shutdownStreams()` clears the interval.
+
+**The cookie jar lives on the persistent mount, and `YOUTUBE_COOKIES` is a seed, not the authority.**
+yt-dlp rewrites the jar on every exit because YouTube rotates session tokens as they are used — that
+refresh *is* how a session stays alive. The jar used to sit in `/tmp`, so every deploy discarded the
+rotated tokens and re-seeded from the config var, replaying a stale snapshot, which is what makes YouTube
+invalidate a session. Suspected cause of cookies "expiring" every few days.
+- It now lives in **`/data/ytdlp-cache/yt-cookies.txt`** — the Dokku bind mount. Note `/data` *itself* is
+  container-local (its mtime is the container start time); only `/data/ytdlp-cache` survives a release.
+  No mount (local dev) falls back to `/tmp`, which still keeps rotation for the container's life.
+- `_seedCookies` writes the config var **only when its djb2 digest differs from `.cookie-seed`** next to
+  the jar. Unchanged var + existing jar → keep the jar, it may carry rotated tokens the var doesn't have.
+  Changed var → the operator re-exported, so it wins.
+- `/setcookies` deliberately does **not** update the seed marker: it still records the config var, so the
+  next boot sees an unchanged var and keeps the upload instead of reverting to the var's older value.
+  An upload now survives restarts — still set the config var too, so a fresh volume has it.
 
 ## Server Structure
 - 📢 COMMUNITY: #welcome (ID: 902775878075940905), #general, #announcements, #introductions, #memes, #media

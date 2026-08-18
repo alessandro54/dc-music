@@ -6,7 +6,7 @@ import "@/bootstrap.js";
 import { initDb } from "@/db/client.js";
 import { createClient } from "@/discord/client.js";
 import { warmToken } from "@/discord/services/spotifyService.js";
-import { logCookieHealth } from "@/discord/services/ytdlpService.js";
+import { logCookieHealth, startCookieWatch } from "@/discord/services/ytdlpService.js";
 import { installShutdownHandlers } from "@/discord/shutdown.js";
 import { startHealthServer } from "@/lib/health.js";
 import { log } from "@/lib/logger.js";
@@ -24,7 +24,12 @@ warmToken().catch((err) => log.warn(`spotify token warm-up failed: ${err.message
 // makes an expired cookie jar say so at boot. Without it a dead session is
 // invisible until someone plays a gated video, and then it reads as yt-dlp
 // breakage rather than "re-export the cookies".
-logCookieHealth().catch((err) => log.warn(`cookie health check failed: ${err.message}`));
+// Awaited only to prime the watcher's baseline before it starts ticking — a
+// rotation mid-uptime is the case the boot check alone cannot see, and that is
+// what actually took playback down.
+logCookieHealth()
+    .catch((err) => log.warn(`cookie health check failed: ${err.message}`))
+    .finally(() => startCookieWatch());
 
 // Started before login on purpose, so the port is already answering 503 while
 // Discord connects — Dokku's healthcheck needs something to poll from the moment

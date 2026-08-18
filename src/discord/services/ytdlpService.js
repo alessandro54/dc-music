@@ -1,4 +1,6 @@
+import { TIMEOUTS } from "@/lib/constants.js";
 import { log } from "@/lib/logger.js";
+import { captureError } from "@/lib/sentry.js";
 
 // Everything about *running* yt-dlp: the argument sets, the proxy/cookie policy,
 // and the child-process registry. Nothing here knows what a song or a queue is —
@@ -12,7 +14,31 @@ export const dec = new TextDecoder();
 export const AUDIO_FMT = "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=opus]/bestaudio";
 
 // ── cookies ────────────────────────────────────────────────────────────────
-const COOKIE_FILE = "/tmp/yt-cookies.txt";
+// yt-dlp rewrites the jar on every exit, because YouTube rotates session tokens
+// as they are used — that refresh is how a session stays alive. Keeping the jar
+// in /tmp threw it away on every deploy and re-seeded from the config var, i.e.
+// replayed a stale snapshot, which is what makes YouTube invalidate a session.
+// So it goes on the one path that survives a release: /data/ytdlp-cache is the
+// Dokku bind mount (`/data` itself is container-local — its mtime is the
+// container's start time).
+const PERSIST_DIR = "/data/ytdlp-cache";
+
+function pickCookieDir() {
+    try {
+        Deno.mkdirSync(PERSIST_DIR, { recursive: true });
+        const probe = `${PERSIST_DIR}/.write-test`;
+        Deno.writeTextFileSync(probe, "");
+        Deno.removeSync(probe);
+        return PERSIST_DIR;
+    } catch {
+        // No mount (local dev, or the volume is gone). /tmp still keeps rotation
+        // for the life of the container, it just loses it on the next release.
+        return "/tmp";
+    }
+}
+
+const COOKIE_DIR = pickCookieDir();
+const COOKIE_FILE = `${COOKIE_DIR}/yt-cookies.txt`;
 
 let COOKIES_ARGS = [];
 function writeCookies(text) {
@@ -20,22 +46,79 @@ function writeCookies(text) {
     COOKIES_ARGS = ["--cookies", COOKIE_FILE];
 }
 
-const cookies = Deno.env.get("YOUTUBE_COOKIES");
-if (cookies) {
+// Cheap non-crypto digest (djb2). It only has to answer "is the config var still
+// the one this jar was seeded from?", and it runs at module scope, where the
+// async WebCrypto API would not.
+function digest(text) {
+    let h = 5381;
+    for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+    return `${(h >>> 0).toString(16)}:${text.length}`;
+}
+
+const readIfExists = (path) => {
     try {
-        writeCookies(cookies);
-        log.info("[ytdlp] YouTube cookies loaded");
-    } catch (err) {
-        log.error(`[ytdlp] Failed to write cookies: ${err.message}`);
+        return Deno.readTextFileSync(path);
+    } catch {
+        return null;
     }
+};
+
+// What the jar should start as. `YOUTUBE_COOKIES` is a *seed*, not the authority:
+// once yt-dlp has rotated the jar, the file on disk is newer than the var, and
+// rewriting it would undo the refresh. So the var only wins when it has actually
+// changed — which is exactly when the operator has re-exported.
+function _seedCookies(envCookies, dir = COOKIE_DIR) {
+    const file = `${dir}/yt-cookies.txt`;
+    const seedFile = `${dir}/.cookie-seed`;
+    const persisted = readIfExists(file);
+
+    if (!envCookies) {
+        // A jar with no var behind it is still a jar — /setcookies uploads live
+        // here too, and a volume that has one should keep working.
+        return {
+            reason: persisted ? "persisted jar, no config var set" : null,
+            file,
+            hasCookies: !!persisted,
+        };
+    }
+
+    const seed = digest(envCookies);
+    if (persisted && readIfExists(seedFile) === seed) {
+        return { reason: "persisted jar (config var unchanged)", file, hasCookies: true };
+    }
+
+    Deno.writeTextFileSync(file, envCookies);
+    try {
+        Deno.writeTextFileSync(seedFile, seed);
+    } catch { /* unwritable dir: the var simply reseeds on every boot */ }
+    return {
+        reason: persisted ? "config var changed — reseeded" : "seeded from config var",
+        file,
+        hasCookies: true,
+    };
+}
+
+export const _seedCookiesForTests = _seedCookies;
+
+const seeded = _seedCookies(Deno.env.get("YOUTUBE_COOKIES"));
+if (seeded.hasCookies) {
+    COOKIES_ARGS = ["--cookies", seeded.file];
+    log.info(`[ytdlp] YouTube cookies loaded — ${seeded.reason} (${seeded.file})`);
 }
 
 // Hot-swap cookies at runtime (see commands/admin/setcookies.js). Takes effect on
-// the next yt-dlp call — no restart needed — but doesn't persist: the host's
-// YOUTUBE_COOKIES config var still wins on the next deploy/restart.
+// the next yt-dlp call, no restart needed. The seed marker is deliberately *not*
+// updated: it still records the config var, so the next boot sees an unchanged
+// var and keeps this upload instead of reverting to the var's older value.
 export function reloadCookies(text) {
     writeCookies(text);
-    log.info("[ytdlp] YouTube cookies reloaded (live only — update YOUTUBE_COOKIES on the host to persist)");
+    log.info(
+        `[ytdlp] YouTube cookies reloaded — ${
+            COOKIE_DIR === PERSIST_DIR
+                ? "persisted, survives restarts (set YOUTUBE_COOKIES too, for a fresh volume)"
+                : "live only, no persistent volume here"
+        }`,
+    );
 }
 
 export const hasCookies = () => COOKIES_ARGS.length > 0;
@@ -117,6 +200,9 @@ export async function checkCookieSession({ timeoutMs = 20_000 } = {}) {
 // instead of leaving it to look like yt-dlp broke.
 export async function logCookieHealth(opts) {
     const { ok, reason } = await checkCookieSession(opts);
+    // Prime the watcher: without this a jar already dead at boot files a fresh
+    // issue at the first tick, having already said so in the boot log.
+    if (ok !== null) lastCookieState = ok;
     if (ok === true) log.info("[ytdlp] YouTube cookie session live");
     else if (ok === false) {
         log.warn(
@@ -125,6 +211,35 @@ export async function logCookieHealth(opts) {
         );
     } else log.warn(`[ytdlp] cookie check inconclusive (${reason}) — assuming they are fine`);
     return ok;
+}
+
+// The boot check alone misses the case that actually happened: the session was
+// rotated 20 hours into an uptime, so nothing noticed until the next restart.
+// Re-check on an interval and report the *transition*, not every tick — a jar
+// that has been dead for a day should not file an issue every 6h.
+let cookieWatch = null;
+let lastCookieState;
+
+export function startCookieWatch({ everyMs = TIMEOUTS.COOKIE_CHECK_MS } = {}) {
+    if (cookieWatch || !hasCookies()) return;
+    cookieWatch = setInterval(async () => {
+        const { ok, reason } = await checkCookieSession();
+        // Inconclusive says nothing about the session — leave the last known
+        // state alone rather than treating it as a change in either direction.
+        if (ok === null) return;
+        if (ok === lastCookieState) return;
+        lastCookieState = ok;
+        if (ok) return void log.info("[ytdlp] YouTube cookie session is live again");
+        log.warn(`[ytdlp] YouTube cookie session went dead (${reason}) — re-export and run /setcookies`);
+        captureError(new Error(`YouTube cookie session went dead: ${reason}`), {
+            tags: { stage: "cookies" },
+        });
+    }, everyMs);
+}
+
+export function stopCookieWatch() {
+    clearInterval(cookieWatch);
+    cookieWatch = null;
 }
 
 // ── argument sets ──────────────────────────────────────────────────────────
@@ -297,6 +412,7 @@ export const sleep = (ms, signal) =>
 // Kill everything the bot owns. Called from the shutdown path so a redeploy
 // doesn't leave yt-dlp children behind.
 export async function shutdownStreams() {
+    stopCookieWatch();
     _shutdownAC.abort();
     const procs = [...liveProcs];
     liveProcs.clear();

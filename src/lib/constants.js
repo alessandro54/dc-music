@@ -19,6 +19,7 @@ export const TIMEOUTS = {
     ALONE_LEAVE_MS: 120_000, // leave once the last human has been gone this long
     VOICE_RECONNECT_MS: 5_000,
     STREAM_STALL_MS: 25_000, // skip if a track stays buffering this long (yt-dlp stalled)
+    COOKIE_CHECK_MS: 21_600_000, // re-check the YouTube session every 6h — it rotates mid-uptime
 };
 
 export const POLL_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"];
