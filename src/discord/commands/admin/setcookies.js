@@ -3,7 +3,7 @@ import { MessageFlags, PermissionFlagsBits } from "discord.js";
 import { requireOwner } from "@/discord/guards.js";
 import { ephemeral } from "@/discord/reply.js";
 import { defineCommand } from "@/discord/router.js";
-import { reloadCookies } from "@/discord/services/ytdlpService.js";
+import { checkCookieSession, reloadCookies } from "@/discord/services/ytdlpService.js";
 
 export default defineCommand({
     name: "setcookies",
@@ -30,9 +30,19 @@ export default defineCommand({
         }
 
         reloadCookies(text);
+        // Verify before saying "done". An export from a browser that had already
+        // been logged out looks identical on disk to a good one, and the failure
+        // otherwise only shows up later as a play that won't start.
+        const { ok, reason } = await checkCookieSession();
+        const verdict = ok === true
+            ? "✅ session is authenticated."
+            : ok === false
+            ? `⚠️ **not authenticated** (${reason}) — re-export from a window that is actually logged in.`
+            : `couldn't verify (${reason}) — probably fine.`;
         await interaction.editReply(
-            "Cookies reloaded — live immediately, no restart needed. This won't survive the next " +
-                "deploy/restart though: also update the `YOUTUBE_COOKIES` config var on the host for that.",
+            `Cookies reloaded — live immediately, no restart needed. ${verdict}\n` +
+                "This won't survive the next deploy/restart though: also update the `YOUTUBE_COOKIES` " +
+                "config var on the host for that.",
         );
     },
 });

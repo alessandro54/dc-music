@@ -352,6 +352,11 @@ queue advances, so the embed briefly shows the outgoing track — fixing it mean
   the caller retries immediately, so `streamService` logs it and returns. One failed play used to
   emit two issues with no way to tell a recovered miss from a dead track. Only the authenticated
   attempt captures, tagged `useCookies`.
+- **A login gate never blames the proxy.** `markProxyBad` is skipped when stderr `isLoginGate` — in
+  both `streamService`'s stderr watcher and `runYtdlp`'s direct-retry. Observed on prod: one gated
+  video put WARP in its 5min cooldown while WARP was healthy, so every play in that window paid the
+  slow authenticated route — and when the cookies are what's gated, the fallback it forced cannot work
+  either. Captured errors carry a `loginGate` tag, since the message alone can't be told apart.
 - The inverse needed adding: when the cookie attempt yields no first byte, *we* kill the extractor,
   and a signalled exit is indistinguishable from a user skip in the stderr watcher. `_verifiedStream`
   reports that case explicitly with the stderr tail, or it would only ever surface as a bare
@@ -454,6 +459,26 @@ Export Netscape cookies from an **incognito** window logged into a throwaway You
 sudo dokku config:set music-bot YOUTUBE_COOKIES="$(cat cookies.txt)"
 ```
 `streamService.js` writes them to `/tmp/yt-cookies.txt` and wires `COOKIES_ARGS`. When `/play` fails with "Sign in to confirm", re-export and re-set. Full procedure + the PO-token provider sidecar setup: `docs/DEPLOY.md`.
+
+**`checkCookieSession()` answers "is the jar still a session?"** — `logCookieHealth()` runs it at boot
+(not awaited) and `/setcookies` awaits it so the reply says whether the upload actually worked.
+Dead-but-present cookies are the worst case: `hasCookies()` is true, so every play pays the ~7.4s
+authenticated route and still fails on exactly the gated videos the cookies existed for, while the
+symptom ("Sign in to confirm") reads as extractor breakage.
+- The probe is **yt-dlp against `:ythistory`**, which is auth-only, so its answer is about the cookies
+  and nothing else. A video probe can't say that — its failure could be the video, the IP or the session.
+- **Read stderr, not the exit code.** A rotated session is a *warning with exit 0* on the first call of
+  a fresh process (measured: run 1 exited 0 with "The provided YouTube account cookies are no longer
+  valid… rotated in the browser", runs 2-3 exited 1 with "Login details are needed"). Since the check
+  runs once per boot, an exit-code-first version reports live cookies every time. A *clean* exit 0 —
+  neither complaint present — is the pass. Printed items are **not** required: the throwaway account
+  has an empty watch history, so a good jar returns exit 0 with no stdout at all.
+- Two cheaper probes were measured and rejected: the youtube.com `ytcfg` blob (Deno's `fetch` is served
+  a 37KB bot shell with no `ytcfg` at all, where curl gets 869KB) and youtubei.js `session.logged_in`
+  (returns `true` for a junk cookie string — it reports that a cookie was supplied, not that YouTube
+  took it).
+- `ok: null` means the probe itself was inconclusive and is **never** reported as expired. Crying wolf
+  about live cookies sends someone re-exporting for nothing.
 
 ## Server Structure
 - 📢 COMMUNITY: #welcome (ID: 902775878075940905), #general, #announcements, #introductions, #memes, #media

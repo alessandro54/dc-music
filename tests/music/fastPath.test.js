@@ -19,15 +19,20 @@ let spawned = [];
 // attempt produces nothing and the retry succeeds.
 let emitPlan = [];
 
+// stderr each spawn emits, consumed in order alongside emitPlan.
+let stderrPlan = [];
+
 class FakeCommand {
     constructor(cmd, opts) {
         this.record = { cmd, args: opts.args ?? [], signals: [] };
         spawned.push(this.record);
         this.bytes = emitPlan.length ? emitPlan.shift() : 4096;
+        this.stderr = stderrPlan.length ? stderrPlan.shift() : "";
     }
     spawn() {
         const record = this.record;
         const bytes = this.bytes;
+        const stderrText = this.stderr;
         let settle;
         // An extraction that yields nothing exits on its own; a live one keeps
         // running until killed.
@@ -44,7 +49,9 @@ class FakeCommand {
                 },
             }),
             stdin: new WritableStream(),
-            stderr: (async function* () {})(),
+            stderr: (async function* () {
+                if (stderrText) yield new TextEncoder().encode(stderrText);
+            })(),
             status,
             output: () =>
                 status.then(() => ({ code: 0, stdout: new Uint8Array(), stderr: new Uint8Array() })),
@@ -56,9 +63,10 @@ class FakeCommand {
     }
 }
 
-function setup(plan = []) {
+function setup(plan = [], stderrs = []) {
     spawned = [];
     emitPlan = [...plan];
+    stderrPlan = [...stderrs];
     _resetShutdownForTests();
     Deno.Command = FakeCommand;
 }
@@ -134,6 +142,29 @@ Deno.test("after a proxy failure the next play skips the fast path", async () =>
         assertEquals(spawned.length, 1, "cooldown should mean a single direct attempt");
         assert(!usedProxy(spawned[0].args), "proxy is in cooldown");
         assert(usedCookies(spawned[0].args), "direct path is the authenticated one");
+    } finally {
+        restore();
+    }
+});
+
+const LOGIN_GATE =
+    "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies for the authentication.";
+
+Deno.test("a login gate does not put the proxy in cooldown", async () => {
+    // Observed on prod: one gated video disabled WARP for 5min while WARP was
+    // healthy, so every play in that window paid the slow authenticated path —
+    // and the cookies it forced were the thing being gated.
+    setup([0, 0], [LOGIN_GATE, LOGIN_GATE]);
+    try {
+        await createStream(URL_A, 0, () => {}).catch(() => {});
+        // Let the stderr watcher drain before checking what it concluded.
+        await new Promise((r) => setTimeout(r, 10));
+        spawned = [];
+        emitPlan = [4096];
+        stderrPlan = [];
+        await createStream(URL_A, 0, () => {});
+        assert(usedProxy(spawned[0].args), "proxy should still be in use after a login gate");
+        assert(!usedCookies(spawned[0].args), "the fast path should be intact");
     } finally {
         restore();
     }

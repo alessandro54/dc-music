@@ -10,6 +10,7 @@ import {
     dec,
     FULL_EXTRACT_ARGS,
     hasCookies,
+    isLoginGate,
     markProxyBad,
     proxyArgs,
     proxyHealthy,
@@ -267,7 +268,14 @@ function _ytdlpStream(url, seekSeconds, onDuration = null, { useCookies = true, 
         if (!status || status.success || status.signal) return;
         // This stream is already lost (the watchdog will skip it), but the next
         // track can avoid the same fate.
-        if (usedProxy) markProxyBad(`stream exited ${status.code}`);
+        //
+        // A login gate is not a proxy fault, and blaming the proxy for one is
+        // actively harmful: it disables the fast path for 5min, so every play in
+        // that window pays the ~7.4s authenticated route — and if the cookies
+        // are what's gated, the fallback it forced cannot work either. Observed
+        // on prod: one gated video knocked WARP out while WARP was healthy.
+        const stderr = tail.join("\n");
+        if (usedProxy && !isLoginGate(stderr)) markProxyBad(`stream exited ${status.code}`);
         // The cookie-free attempt is *expected* to fail on ~25% of unseen videos
         // — that miss is the whole reason the cookie path exists, and the caller
         // retries immediately. Reporting it made one failed play emit two Sentry
@@ -278,8 +286,15 @@ function _ytdlpStream(url, seekSeconds, onDuration = null, { useCookies = true, 
             return;
         }
         captureError(new Error(`yt-dlp exited ${status.code}: ${tail[tail.length - 1] ?? "no stderr"}`), {
-            tags: { stage: "ytdlp", exitCode: String(status.code), useCookies: "true" },
-            extra: { url, seekSeconds, stderr: tail.join("\n") },
+            tags: {
+                stage: "ytdlp",
+                exitCode: String(status.code),
+                useCookies: "true",
+                // Separates "the session is dead" from every other extraction
+                // failure at the Sentry level, since the message is the same.
+                loginGate: String(isLoginGate(stderr)),
+            },
+            extra: { url, seekSeconds, stderr },
         });
     })();
 
@@ -347,13 +362,14 @@ async function _verifiedStream(url, seekSeconds, onDuration, opts) {
         // here is what makes a hung cookie path visible at all — previously it
         // reached Sentry only as a bare "stream produced no audio".
         if (opts.useCookies) {
+            const stderr = spawned.stderrTail.join("\n");
             captureError(new Error("cookie path produced no audio"), {
-                tags: { stage: "stream", useCookies: "true" },
+                tags: { stage: "stream", useCookies: "true", loginGate: String(isLoginGate(stderr)) },
                 extra: {
                     url,
                     seekSeconds,
                     timeoutMs: FIRST_BYTE_TIMEOUT_MS,
-                    stderr: spawned.stderrTail.join("\n") || "no stderr",
+                    stderr: stderr || "no stderr",
                 },
             });
         }

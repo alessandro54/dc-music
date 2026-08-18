@@ -12,10 +12,12 @@ export const dec = new TextDecoder();
 export const AUDIO_FMT = "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=opus]/bestaudio";
 
 // ── cookies ────────────────────────────────────────────────────────────────
+const COOKIE_FILE = "/tmp/yt-cookies.txt";
+
 let COOKIES_ARGS = [];
 function writeCookies(text) {
-    Deno.writeTextFileSync("/tmp/yt-cookies.txt", text);
-    COOKIES_ARGS = ["--cookies", "/tmp/yt-cookies.txt"];
+    Deno.writeTextFileSync(COOKIE_FILE, text);
+    COOKIES_ARGS = ["--cookies", COOKIE_FILE];
 }
 
 const cookies = Deno.env.get("YOUTUBE_COOKIES");
@@ -37,6 +39,93 @@ export function reloadCookies(text) {
 }
 
 export const hasCookies = () => COOKIES_ARGS.length > 0;
+
+// YouTube answers a dead cookie jar with the *same* "Sign in to confirm you're
+// not a bot" it gives an unauthenticated flagged IP, so an expired session is
+// indistinguishable from extractor breakage in the logs. Matching it in one
+// place is what lets the proxy policy and the error reporting tell the two
+// apart — see `markProxyBad`'s callers and `checkCookieSession` below.
+//
+// All of these mean "YouTube refused the credentials", never "the transport
+// failed", which is the distinction every caller here actually needs.
+const LOGIN_GATE_RE = /Sign in to confirm|LOGIN_REQUIRED|not a bot|Login details are needed/i;
+export const isLoginGate = (text) => LOGIN_GATE_RE.test(text ?? "");
+
+// yt-dlp's own verdict on a rotated session, and the only message that says so
+// outright. It arrives as a *warning* with exit 0 on the first call of a fresh
+// process — measured: run 1 exited 0 with this warning, runs 2 and 3 exited 1
+// with "Login details are needed" — so an exit-code-only check reports live
+// cookies once per boot, which is exactly when this runs.
+const COOKIES_ROTATED_RE = /cookies are no longer valid|cookies have been rotated/i;
+
+// Is the cookie jar still an authenticated session? Ask yt-dlp for the
+// account's own watch history: `:ythistory` is auth-only, so its answer is about
+// the cookies and nothing else. A video probe cannot say that — its failure
+// could be the video, the IP or the session, and that ambiguity is exactly what
+// let a dead jar read as extractor breakage.
+//
+// Two cheaper checks were measured and rejected. The youtube.com ytcfg blob:
+// Deno's fetch is served a 37KB bot shell with no ytcfg in it at all (curl gets
+// 869KB), so the marker is simply absent. And youtubei.js `session.logged_in`:
+// it returns true for a junk cookie string, so it reports that a cookie was
+// supplied, not that YouTube accepted it.
+//
+// Runs direct and with cookies, matching the streaming path this predicts.
+const HISTORY_PROBE_ARGS = [
+    "--flat-playlist",
+    "--simulate",
+    "--playlist-items",
+    "1",
+    "--print",
+    "%(id)s",
+    ":ythistory",
+];
+
+// `ok: null` means the probe itself was inconclusive — a timeout, or a failure
+// whose message is not the login one. Deliberately not reported as expired:
+// crying wolf about live cookies sends someone re-exporting for nothing, and the
+// signal is only worth having because it is unambiguous.
+export async function checkCookieSession({ timeoutMs = 20_000 } = {}) {
+    if (!hasCookies()) return { ok: false, reason: "no cookies configured" };
+    let res;
+    try {
+        res = await _runOnce([...CACHE_ARGS, ...COOKIES_ARGS, ...HISTORY_PROBE_ARGS], {
+            timeoutMs,
+            what: "cookie check",
+        });
+    } catch (err) {
+        return { ok: null, reason: err.message };
+    }
+    const stderr = dec.decode(res.stderr).trim();
+    // Read stderr before the exit code, deliberately: a rotated session is a
+    // warning-with-exit-0 the first time, so a code-first check would call it
+    // authenticated.
+    if (COOKIES_ROTATED_RE.test(stderr)) return { ok: false, reason: "cookies rotated in the browser" };
+    if (isLoginGate(stderr)) return { ok: false, reason: "session expired" };
+    // Nothing printed does *not* mean unauthenticated: a throwaway account has
+    // an empty watch history, which is the normal case here (measured: exit 0,
+    // no stdout, no warnings on a good jar). A clean exit with neither complaint
+    // above is the pass — the rotated jar is caught by its warning, not by the
+    // absence of items.
+    if (res.code === 0) return { ok: true, reason: "authenticated" };
+    return { ok: null, reason: stderr.split("\n").pop()?.slice(0, 200) || `exited ${res.code}, no output` };
+}
+
+// Dead-but-present cookies are the worst case: `hasCookies()` is true, so every
+// play skips nothing and pays the ~7.4s authenticated path before failing on
+// exactly the gated videos the cookies were there for. Say so once, plainly,
+// instead of leaving it to look like yt-dlp broke.
+export async function logCookieHealth(opts) {
+    const { ok, reason } = await checkCookieSession(opts);
+    if (ok === true) log.info("[ytdlp] YouTube cookie session live");
+    else if (ok === false) {
+        log.warn(
+            `[ytdlp] YouTube cookies are NOT authenticated (${reason}) — gated videos will fail ` +
+                'with "Sign in to confirm". Re-export and run /setcookies.',
+        );
+    } else log.warn(`[ytdlp] cookie check inconclusive (${reason}) — assuming they are fine`);
+    return ok;
+}
 
 // ── argument sets ──────────────────────────────────────────────────────────
 let CACHE_ARGS = [];
@@ -243,7 +332,10 @@ export async function runYtdlp(args, { timeoutMs, what }) {
     // the second result. Costs one extra call on a real failure; keeps a broken
     // proxy from taking playback down with it.
     if (viaProxy.length && res.code !== 0) {
-        markProxyBad(`${what} exited ${res.code}`);
+        // Same exemption as the streaming path: a login gate says nothing about
+        // the proxy, and blaming it costs every later call the slow route for
+        // 5min. Still retry direct — the cookies are what the gate is asking for.
+        if (!isLoginGate(dec.decode(res.stderr))) markProxyBad(`${what} exited ${res.code}`);
         // args were built while the proxy was healthy, so cookieArgs() gave
         // nothing. The direct path is the authenticated one — put them back,
         // otherwise the fallback is strictly weaker than the attempt it
