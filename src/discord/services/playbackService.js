@@ -1,6 +1,8 @@
 import { joinVoiceChannel } from "@discordjs/voice";
 
 import { GuildQueue } from "@/discord/guildQueue.js";
+import { UserFacingError } from "@/lib/errors.js";
+import { log } from "@/lib/logger.js";
 
 // Owns the live queues: one GuildQueue per active guild, plus the bot presence
 // that reflects them. `GuildQueue` (discord/guildQueue.js) is an entity, not a
@@ -23,14 +25,39 @@ function updateActivity() {
     }
 }
 
+// Where to announce a track the queue had to drop. Kept up to date on every
+// command that touches the queue, so the message lands in the channel the music
+// is actually being requested from rather than wherever the queue was created.
+const announceChannels = new Map();
+
+// A dropped track has to say so: `/play` posts its Now Playing embed at queue
+// time, so a failure that stays quiet looks like a bot playing silence. Written
+// here rather than in GuildQueue because it is the discord-facing half — the
+// entity only reports that a track died.
+function announceDrop(guildId, song, err) {
+    const channel = announceChannels.get(guildId);
+    if (!channel) return;
+    const title = song?.title ?? "that track";
+    const reason = err instanceof UserFacingError ? err.message : "it wouldn't start";
+    channel.send(`⚠️ Skipped **${title}** — ${reason}.`).catch((sendErr) => {
+        // A channel we can't post in is not worth a Sentry issue.
+        log.warn(`[queue ${guildId}] could not announce a dropped track: ${sendErr.message}`);
+    });
+}
+
 // Get the guild's queue, creating it and joining the voice channel if needed.
 export function getOrCreateQueue(interaction, voiceChannel) {
+    announceChannels.set(interaction.guildId, interaction.channel);
     let queue = queues.get(interaction.guildId);
     if (queue) return queue;
 
     queue = new GuildQueue(interaction.guildId, {
-        onDestroy: () => queues.delete(interaction.guildId),
+        onDestroy: () => {
+            queues.delete(interaction.guildId);
+            announceChannels.delete(interaction.guildId);
+        },
         onChange: updateActivity,
+        onTrackError: (song, err) => announceDrop(interaction.guildId, song, err),
     });
     queues.set(interaction.guildId, queue);
     queue.setConnection(joinVoiceChannel({

@@ -16,11 +16,13 @@ import { captureError } from "@/lib/sentry.js";
 //
 //   onDestroy() — the queue has torn itself down (drop it from the registry)
 //   onChange()  — playing/stopped changed (refresh the bot's presence)
+//   onTrackError(song, err) — a track was dropped; say so where it was asked for
 export class GuildQueue {
-    constructor(guildId, { onDestroy, onChange } = {}) {
+    constructor(guildId, { onDestroy, onChange, onTrackError } = {}) {
         this.guildId = guildId;
         this._onDestroy = onDestroy;
         this._onChange = onChange;
+        this._onTrackError = onTrackError;
         this.songs = [];
         // Tracks that have already finished or been skipped, newest last. Lives
         // only as long as the queue does — /history is the persistent record;
@@ -192,10 +194,22 @@ export class GuildQueue {
     // A track that could not be played: report it, drop it, keep the queue
     // moving. No idle timer — running out of songs this way is a failure, not
     // the end of a listening session.
+    //
+    // Telling the channel is not decoration. `/play` has already posted a Now
+    // Playing embed by the time this runs — it is sent when the track is queued,
+    // not when audio arrives — so without a message the failure looks like the
+    // song is playing while nothing comes out, and `/np` answers "Nothing
+    // playing". That is indistinguishable from a bot that has broken.
     _dropTrack(err, stage, extra) {
         log.error(`[Queue ${this.guildId}] ${stage}: ${err.message}`);
         captureError(err, { tags: { stage, guild: this.guildId }, extra });
-        this.songs.shift();
+        const [song] = this.songs.splice(0, 1);
+        try {
+            this._onTrackError?.(song, err);
+        } catch (notifyErr) {
+            // Never let the notification take the queue down with it.
+            log.error(`[Queue ${this.guildId}] notify: ${notifyErr.message}`);
+        }
         return this._advance({ idleTimer: false });
     }
 

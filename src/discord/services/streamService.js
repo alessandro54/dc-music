@@ -43,13 +43,26 @@ export function _resetShutdownForTests() {
 // Wait for the stream to actually produce a byte, so a dead extraction is
 // caught here instead of surfacing 25s later as a stalled track. Returns a
 // stream with that first chunk put back, or null when nothing ever arrived.
-const FIRST_BYTE_TIMEOUT_MS = 9000;
+//
+// The two attempts get different budgets because they mean different things. The
+// fast attempt is speculative — a miss is expected and costs only the retry, so
+// it stays cheap. The authenticated attempt is the last chance: giving up on it
+// means the track is dropped, so it gets room to finish.
+//
+// 9s for both was too tight for the cookie path and silently so. Measured to
+// first audio on this host, cold: 7757ms / 9089ms through WARP, 8010ms / 7923ms
+// direct — a coin flip against a 9s ceiling, and the proxy is not the variable.
+// It went unnoticed because a login gate on the fast attempt used to trip the
+// proxy cooldown, which shaved off the hop that pushed it over.
+const FIRST_BYTE_FAST_MS = 9000;
+// Stays clear of STREAM_STALL_MS (25s), which is the watchdog behind this one.
+const FIRST_BYTE_COOKIE_MS = 20_000;
 
-export async function _awaitFirstByte(webStream, proc) {
+export async function _awaitFirstByte(webStream, proc, timeoutMs = FIRST_BYTE_FAST_MS) {
     const reader = webStream.getReader();
     let timer;
     const deadline = new Promise((resolve) => {
-        timer = setTimeout(() => resolve({ timedOut: true }), FIRST_BYTE_TIMEOUT_MS);
+        timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
     });
     // A failed extractor exits within a couple of seconds; racing its status
     // means we don't sit out the whole budget for a video that is never coming.
@@ -351,7 +364,8 @@ function _ytdlpStream(url, seekSeconds, onDuration = null, { useCookies = true, 
 // null when the extraction produced nothing, so the caller can try another way.
 async function _verifiedStream(url, seekSeconds, onDuration, opts) {
     const spawned = _ytdlpStream(url, seekSeconds, onDuration, opts);
-    const verified = await _awaitFirstByte(spawned.out, spawned.lead);
+    const budget = opts.useCookies ? FIRST_BYTE_COOKIE_MS : FIRST_BYTE_FAST_MS;
+    const verified = await _awaitFirstByte(spawned.out, spawned.lead, budget);
     if (!verified) {
         spawned.cleanup();
         await Promise.all(spawned.procs.map((p) => reap(p)));
@@ -368,7 +382,7 @@ async function _verifiedStream(url, seekSeconds, onDuration, opts) {
                 extra: {
                     url,
                     seekSeconds,
-                    timeoutMs: FIRST_BYTE_TIMEOUT_MS,
+                    timeoutMs: budget,
                     stderr: stderr || "no stderr",
                 },
             });

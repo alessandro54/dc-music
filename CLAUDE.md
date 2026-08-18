@@ -294,7 +294,13 @@ with 14 exports and 9 responsibilities; see the SOLID notes at the end of this s
 they share (`extractVideoId`, `isYouTubeUrl`, `ytThumb`, `trackKey`, `fmtSecs`).
 - `fetchVideoInfo` (`streamService.js`) → in-memory cache, then **`song_history` row, Innertube `getBasicInfo`, and oEmbed raced concurrently** (`Promise.any`), falling back to yt-dlp `--dump-json` only when all three reject. They were chained before; each misses often enough on this IP (DB miss, Innertube `LOGIN_REQUIRED` for ~5 of 6 videos, oEmbed 404 on unlisted) that chaining made every play pay the **sum of the misses**. Raced, a play costs the fastest source that answers. Innertube is capped at 1.5s — it has no deadline of its own.
 - **Cold plays go fast-then-slow.** `createStream` first tries cookie-free through the proxy (~2s), and falls back to the cookie-authenticated path (~7.4s) when no audio arrives. Cookies are the ~6s tax — an authenticated session makes YouTube demand the full player-JS + nsig chain — and the cookie-free path only works on ~75% of unseen videos, so both halves are needed.
-- **`_awaitFirstByte` is what makes the fallback affordable.** It peeks the first chunk (racing the extractor's exit and a 9s budget) and puts it back before the resource reaches the player. Without it a dead extraction only surfaced when the 25s stall watchdog fired, which made "try fast, then slow" cost 32s instead of ~8s.
+- **`_awaitFirstByte` is what makes the fallback affordable.** It peeks the first chunk (racing the extractor's exit and a first-byte budget) and puts it back before the resource reaches the player. Without it a dead extraction only surfaced when the 25s stall watchdog fired, which made "try fast, then slow" cost 32s instead of ~8s.
+- **The two attempts get different budgets** — `FIRST_BYTE_FAST_MS` 9s, `FIRST_BYTE_COOKIE_MS` 20s. The
+  fast attempt is speculative, so a miss must stay cheap; the authenticated one is the last chance, and
+  giving up on it drops the track. 9s for both was too tight and failed silently: measured cold to first
+  audio, **7757ms / 9089ms through WARP and 8010ms / 7923ms direct** — a coin flip against a 9s ceiling,
+  with the proxy *not* the variable. It hid behind the proxy-cooldown bug, which used to knock the hop
+  off the retry and shave it under the wire; fixing that attribution is what exposed this.
 - **There is deliberately no media-URL cache.** One existed and had to be removed: a googlevideo URL fetched with a plain GET is truncated by the server — on a 4:19 track `clen` said 4,429,008 bytes and a single `fetch` returned 622,592, so playback ended seconds in. yt-dlp ranges its own downloads, which is why it is correct. Reinstating a cache means writing a ranged reader first. Every test at the time read only the first 64KB, which a truncated stream satisfies — hence the e2e now pulls 1.5MB.
 - **Duration comes from the streaming extraction, not a second yt-dlp.** `createStream` takes an `onDuration` callback and passes `--print-to-file %(duration)s /tmp/yt-duration-<id>.txt`; stdout stays pure audio and a poller fills the song in place (~2.8s in, measured). The eager `backfillDuration` still exists for tracks queued *behind* others, but waits 2s + until 8s past the last streaming spawn, then re-checks — by then the sidecar has usually answered and it spawns nothing.
 - `duration` is therefore `null` for a few seconds on the URL path — **every view must tolerate it** (`song.duration ?? "—"`).
@@ -323,6 +329,15 @@ Two timers, both in `TIMEOUTS`, both deliberately grace periods rather than inst
 
 Failure paths call `_advance({ idleTimer: false })` — running *out* of songs starts the leave
 countdown, failing out of them doesn't.
+
+**A dropped track announces itself.** `_dropTrack` reports up through `onTrackError`, and
+`playbackService.announceDrop` posts `⚠️ Skipped **title** — reason` to the channel the last command
+came from (tracked in `announceChannels`, not the queue's birth channel). This is not decoration: the
+Now Playing embed is sent when a track is **queued**, not when audio arrives, so a silent drop leaves an
+embed for a song that never plays while `/np` says "Nothing playing" — indistinguishable from a broken
+bot. `UserFacingError` messages are shown as-is; anything else says "it wouldn't start", since the real
+cause is a yt-dlp stderr tail nobody in Discord can act on. A send failure only logs — the notification
+must never take the queue down.
 
 `/previous` is backed by `queue.played`, an in-memory stack (cap `LIMITS.PLAYED_HISTORY`) filled
 by the Idle handler from the track it shifts off. It is **not** `/history`, which is the DB record;
