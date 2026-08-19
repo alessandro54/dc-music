@@ -120,6 +120,19 @@ export class GuildQueue {
         if (!this.playing) await this._playNext();
     }
 
+    // Jump the queue: land right behind the playing track instead of at the tail.
+    // songs[0] IS the playing track (the Idle handler shifts it off when it
+    // ends), so index 1 is the front of what is actually waiting. With nothing
+    // playing there is no such track and index 0 is that same spot. Returns the
+    // index it landed at so the caller can report the position.
+    addNext(songs) {
+        clearTimeout(this._idleTimeout);
+        const at = this.playing ? 1 : 0;
+        this.songs.splice(at, 0, ...songs);
+        if (!this.playing) this._playNext();
+        return at;
+    }
+
     addMany(songs) {
         clearTimeout(this._idleTimeout);
         const wasEmpty = this.songs.length === 0;

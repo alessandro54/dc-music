@@ -6,9 +6,9 @@ import { COLORS, LIMITS } from "@/lib/constants.js";
 import { durationToMs, formatMs, progressBar } from "@/lib/utils.js";
 
 // Single track added — "Now Playing" if it starts immediately, else "Added to Queue".
-export function trackQueued(song, isFirst, position) {
+export function trackQueued(song, isFirst, position, next = false) {
     const e = embed()
-        .setTitle(isFirst ? "🎵 Now Playing" : "➕ Added to Queue")
+        .setTitle(isFirst ? "🎵 Now Playing" : next ? "⏭️ Playing Next" : "➕ Added to Queue")
         .setDescription(`**${song.title}**`)
         .addFields(
             // duration can still be backfilling — an empty field value throws.
@@ -21,9 +21,9 @@ export function trackQueued(song, isFirst, position) {
 }
 
 // Multiple tracks (Spotify/YouTube playlist or album) queued at once.
-export function playlistQueued(count, playlistName, requestedBy) {
+export function playlistQueued(count, playlistName, requestedBy, next = false) {
     return embed(COLORS.SPOTIFY)
-        .setTitle("📋 Playlist Queued")
+        .setTitle(next ? "⏭️ Playlist Queued Next" : "📋 Playlist Queued")
         .setDescription(`**${playlistName ?? "Playlist"}** — ${count} songs added`)
         .addFields({ name: "Requested by", value: requestedBy, inline: true });
 }

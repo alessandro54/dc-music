@@ -12,6 +12,7 @@ import { pause, resume, skip, stop } from "@/discord/commands/playback/controls.
 import history from "@/discord/commands/playback/history.js";
 import np from "@/discord/commands/playback/np.js";
 import play from "@/discord/commands/playback/play/index.js";
+import playnow from "@/discord/commands/playback/playnow.js";
 import previous from "@/discord/commands/playback/previous.js";
 import queue from "@/discord/commands/playback/queue.js";
 import seek from "@/discord/commands/playback/seek.js";
@@ -25,7 +26,7 @@ import { createRouter } from "@/discord/router.js";
 // Group labels are what /help renders, so a command joins the help output by
 // being registered. `hidden` keeps owner tooling out of it.
 export const router = createRouter()
-    .include("playback", [play, pause, resume, previous, skip, stop, seek, queue, np, history], {
+    .include("playback", [play, playnow, pause, resume, previous, skip, stop, seek, queue, np, history], {
         label: "🎵 Music",
     })
     .include("tracks", [leaderboard], { label: "📈 Tracks" })
