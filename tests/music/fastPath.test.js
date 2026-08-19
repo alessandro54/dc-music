@@ -80,6 +80,11 @@ function restore() {
 
 const usedCookies = (args) => args.includes("--cookies");
 const usedProxy = (args) => args.includes("--proxy");
+// Which player_client list an attempt was pinned to — the escalation's whole
+// point is that the last attempt asks YouTube as a *different* client.
+const pinnedClients = (args) =>
+    args.find((a) => typeof a === "string" && a.includes("player_client="))?.split("player_client=")[1] ??
+        null;
 
 Deno.test("first attempt goes through the proxy without cookies", async () => {
     setup();
@@ -116,8 +121,8 @@ Deno.test("a silent fast attempt is reaped, not left running", async () => {
     }
 });
 
-Deno.test("both attempts silent throws instead of playing silence", async () => {
-    setup([0, 0]);
+Deno.test("every attempt silent throws instead of playing silence", async () => {
+    setup([0, 0, 0]);
     try {
         let threw = null;
         await createStream(URL_A, 0, () => {}).catch((e) => {
@@ -126,7 +131,26 @@ Deno.test("both attempts silent throws instead of playing silence", async () => 
         // Throwing lets the queue skip the track immediately; returning a dead
         // resource would leave the listener with 25s of nothing.
         assertEquals(threw, "stream produced no audio");
-        assertEquals(spawned.length, 2);
+        assertEquals(spawned.length, 3, "cookie-free, cookied, then escalated clients");
+    } finally {
+        restore();
+    }
+});
+
+Deno.test("a dead player_client pin escalates to the fallback clients", async () => {
+    // The failure mode this exists for: YouTube stops serving the pinned client
+    // and *every* play goes silent at once, as happened on 2026-08-18. The third
+    // attempt is what turns that from an outage into a slow play.
+    setup([0, 0, 4096]);
+    try {
+        const resource = await createStream(URL_A, 0, () => {});
+        assert(resource, "the escalated attempt should yield a playable resource");
+        assertEquals(spawned.length, 3);
+        assert(usedCookies(spawned[2].args), "the escalation is an authenticated attempt");
+        assert(
+            pinnedClients(spawned[2].args) !== pinnedClients(spawned[1].args),
+            "escalating to the same clients that just failed would be pointless",
+        );
     } finally {
         restore();
     }

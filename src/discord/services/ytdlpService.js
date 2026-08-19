@@ -271,18 +271,41 @@ if (potBaseUrl) {
 // cache — and a GitHub outage would mean no audio at all.
 const EJS_ARGS = [];
 
-// Force PO-token fetching, but let yt-dlp pick the client.
-// - No player_client pin: YouTube enabled the SABR-only streaming experiment
-//   on this account's `tv` client (formats come back with no URLs — see
-//   https://github.com/yt-dlp/yt-dlp/issues/12482), so pinning tv yields
-//   "Requested format is not available". yt-dlp ≥ 2026.07.04 keeps the PO
-//   token and format URL on the same client in the default set (it used to
-//   mismatch → 403, which is why tv was pinned), so the default set is safe
-//   again and falls through to a client that still serves DASH opus (251).
+// Force PO-token fetching, and pin the one client that still serves playable
+// audio on this IP.
+// - player_client=web_embedded: letting yt-dlp pick used to work, and stopped
+//   on 2026-08-18. Measured that day on prod, cookied, through WARP: the whole
+//   default set fails — `tv_downgraded` answers UNPLAYABLE / "The page needs to
+//   be reloaded.", and `web` comes back with formats that have no URL because
+//   YouTube forces SABR on it (https://github.com/yt-dlp/yt-dlp/issues/12482).
+//   Of every client tried, only `web_embedded` yields bytes: `tv`/`tv_simply`/
+//   `web_safari`/`android_vr`/`ios` serve no usable format, and `mweb` hands
+//   back a URL that then 403s on download — which is the failure a `-g` check
+//   cannot see, so verify a pin by pulling real bytes, not by printing the URL.
+//   Confirmed on 4 videos, cookied *and* cookie-free, so the fast path keeps
+//   working. `default` stays as the tail of the list: it costs nothing while it
+//   is broken, and takes over by itself if YouTube reverts.
 // - fetch_pot=always: some clients skip the PO token by default, but some
 //   videos' GVS URLs require one → 403. Forcing it makes bgutil always mint
 //   the player + gvs tokens.
-const CLIENT_ARGS = ["--extractor-args", "youtube:fetch_pot=always"];
+//
+// The pin is overridable at runtime because this has now broken twice from
+// YouTube-side changes, and a code push means a fresh image build plus a deploy.
+// `dokku config:set music-bot YTDLP_PLAYER_CLIENTS=…` + restart is the 30-second
+// version of the same fix. Comma-separated, yt-dlp's own syntax.
+const PRIMARY_CLIENTS = Deno.env.get("YTDLP_PLAYER_CLIENTS") || "web_embedded,default";
+
+// Tried only after the primary list has produced no audio at all — see
+// `createStream`'s escalation. `mweb` is useless as a primary (it extracts, then
+// 403s at download) but it *sees* videos web_embedded cannot, so it earns a place
+// on a path whose alternative is dropping the track.
+const FALLBACK_CLIENTS = "mweb,tv_simply,ios,android_vr";
+
+if (Deno.env.get("YTDLP_PLAYER_CLIENTS")) {
+    log.info(`[ytdlp] player_client pinned by config → ${PRIMARY_CLIENTS}`);
+}
+
+const clientArgs = (clients) => ["--extractor-args", `youtube:fetch_pot=always;player_client=${clients}`];
 
 // Metadata needs a title and a duration — not a playable format URL. Pinning a
 // single lightweight client and skipping the player JS avoids yt-dlp probing
@@ -297,7 +320,15 @@ export const META_ARGS = [
 
 // The full extraction set — what playback itself can see. Used as the metadata
 // retry for private/unlisted videos the cheap client can't reach.
-export const FULL_EXTRACT_ARGS = () => [...POT_ARGS, ...EJS_ARGS, ...CLIENT_ARGS];
+// `clients` selects which pin to use: the primary list, or the fallback list a
+// last-ditch attempt escalates to. Callers that don't care get the primary.
+export const FULL_EXTRACT_ARGS = (clients = PRIMARY_CLIENTS) => [
+    ...POT_ARGS,
+    ...EJS_ARGS,
+    ...clientArgs(clients),
+];
+
+export const PLAYER_CLIENTS = { primary: PRIMARY_CLIENTS, fallback: FALLBACK_CLIENTS };
 
 export const cacheArgs = () => CACHE_ARGS;
 export const potArgs = () => POT_ARGS;

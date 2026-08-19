@@ -12,6 +12,7 @@ import {
     hasCookies,
     isLoginGate,
     markProxyBad,
+    PLAYER_CLIENTS,
     proxyArgs,
     proxyHealthy,
     reap,
@@ -121,8 +122,40 @@ export async function createStream(url, seekSeconds = 0, onDuration = null, { tr
         );
     }
 
-    const resource = await _verifiedStream(url, seekSeconds, onDuration, { ...opts, useCookies: true });
+    // A non-YouTube source has no client escalation behind it, so its cookie
+    // attempt is the final one.
+    const resource = await _verifiedStream(url, seekSeconds, onDuration, {
+        ...opts,
+        useCookies: true,
+        final: !isYouTubeUrl(url),
+    });
     if (resource) return resource;
+
+    // Last ditch: the same authenticated attempt against a different set of
+    // player clients. The pinned list is the part of this pipeline most likely to
+    // rot — YouTube has now twice made the working client stop working, and each
+    // time every play went silent at once. This attempt costs nothing in the
+    // common case because it only runs on a track that is otherwise *already*
+    // being dropped, so the trade is latency on a doomed play against the bot
+    // going mute until someone ships a new pin.
+    if (isYouTubeUrl(url)) {
+        log.warn(`[stream] ${PLAYER_CLIENTS.primary} produced no audio — escalating clients`);
+        const escalated = await _verifiedStream(url, seekSeconds, onDuration, {
+            ...opts,
+            useCookies: true,
+            clients: PLAYER_CLIENTS.fallback,
+            final: true,
+        });
+        if (escalated) {
+            // Worth an issue even though it recovered: it means the primary pin
+            // is dead and the next YouTube nudge takes the fallback with it.
+            captureError(new Error(`player_client ${PLAYER_CLIENTS.primary} dead — fallback served audio`), {
+                tags: { stage: "stream", clients: PLAYER_CLIENTS.fallback },
+            });
+            return escalated;
+        }
+    }
+
     // Nothing produced audio. Throwing lets GuildQueue skip the track with a
     // real error instead of playing silence until the watchdog notices.
     throw new Error("stream produced no audio");
@@ -198,7 +231,12 @@ export async function destroyResource(resource) {
     await Promise.all((resource._procs ?? []).map((proc) => reap(proc)));
 }
 
-function _ytdlpStream(url, seekSeconds, onDuration = null, { useCookies = true, transcode = false } = {}) {
+function _ytdlpStream(
+    url,
+    seekSeconds,
+    onDuration = null,
+    { useCookies = true, transcode = false, clients = PLAYER_CLIENTS.primary } = {},
+) {
     const videoId = extractVideoId(url);
     let durationFile = null;
     if (onDuration) {
@@ -231,7 +269,7 @@ function _ytdlpStream(url, seekSeconds, onDuration = null, { useCookies = true, 
         // A stream failure is heard by the listener, so it always gets cookies.
         ...(useCookies ? cookieArgs({ critical: true }) : []),
         ...cacheArgs(),
-        ...FULL_EXTRACT_ARGS(),
+        ...FULL_EXTRACT_ARGS(clients),
     ];
 
     if (seekSeconds > 0) {
@@ -369,16 +407,26 @@ async function _verifiedStream(url, seekSeconds, onDuration, opts) {
     if (!verified) {
         spawned.cleanup();
         await Promise.all(spawned.procs.map((p) => reap(p)));
-        // The authenticated attempt is the last one, so its failure is what the
-        // listener hears. It is also the one the stderr watcher above can't
-        // report: giving up on first byte means *we* kill the extractor, and a
-        // signalled exit is indistinguishable there from a skip. Reporting it
-        // here is what makes a hung cookie path visible at all — previously it
-        // reached Sentry only as a bare "stream produced no audio".
-        if (opts.useCookies) {
+        // Only the *final* attempt is worth an issue — its failure is what the
+        // listener hears. A cookie-path miss that the client escalation then
+        // recovers from is a recovered miss, and reporting it would recreate the
+        // exact confusion the cookie-free attempt's filter exists to prevent:
+        // two issues per play with no way to tell a dead track from a retried one.
+        // The escalation reports the dead pin itself instead, in `createStream`.
+        //
+        // This is also the failure the stderr watcher above cannot report: giving
+        // up on first byte means *we* kill the extractor, and a signalled exit is
+        // indistinguishable there from a user skip. Reporting it here is what
+        // makes a hung cookie path visible at all.
+        if (opts.useCookies && opts.final) {
             const stderr = spawned.stderrTail.join("\n");
             captureError(new Error("cookie path produced no audio"), {
-                tags: { stage: "stream", useCookies: "true", loginGate: String(isLoginGate(stderr)) },
+                tags: {
+                    stage: "stream",
+                    useCookies: "true",
+                    clients: opts.clients ?? PLAYER_CLIENTS.primary,
+                    loginGate: String(isLoginGate(stderr)),
+                },
                 extra: {
                     url,
                     seekSeconds,
