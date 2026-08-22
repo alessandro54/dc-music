@@ -20,6 +20,24 @@ export function trackQueued(song, isFirst, position, next = false) {
     return e;
 }
 
+// /radio — names the seed and says the station is endless. A station whose seed
+// is invisible is indistinguishable from a random shuffle, and the first question
+// anyone asks of a radio is what it is a radio *of*. Saying it keeps going matters
+// too: without that line an empty-looking queue reads as the bot having stopped.
+export function radioQueued(count, seed, requestedBy) {
+    return embed(COLORS.PRIMARY)
+        .setTitle("📡 Radio Started")
+        .setDescription(
+            `Station seeded from **${seed.title}**\n${count} ${
+                count === 1 ? "track" : "tracks"
+            } queued — more will be added automatically.`,
+        )
+        .addFields(
+            { name: "Requested by", value: requestedBy, inline: true },
+            { name: "To stop", value: "`/stop` or ⏹️", inline: true },
+        );
+}
+
 // Multiple tracks (Spotify/YouTube playlist or album) queued at once.
 export function playlistQueued(count, playlistName, requestedBy, next = false) {
     return embed(COLORS.SPOTIFY)

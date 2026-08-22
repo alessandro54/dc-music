@@ -16,6 +16,9 @@ export const LIMITS = {
     RADIO_MAX: 25,
     RADIO_SEEDS: 5, // newest picks used as automix seeds — fetched concurrently
     RADIO_HISTORY_WINDOW: 25, // pulled once: the newest few seed, all of them exclude
+    RADIO_LOW_WATER: 3, // refill the station once the wait list drops to this
+    RADIO_REFILL: 5, // tracks per refill — small, so the seed drifts often
+    RADIO_MAX_FAILURES: 2, // consecutive empty refills before the station gives up
 };
 
 export const TIMEOUTS = {

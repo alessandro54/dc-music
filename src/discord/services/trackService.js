@@ -15,6 +15,13 @@ const FINGERPRINT = sql`coalesce(${songHistory.fingerprint}, ${songHistory.url})
 // written before the column exists are NULL, which `is not 1` treats as a pick.
 const CHOSEN = sql`${songHistory.viaPlaylist} is not 1`;
 
+// Rows a human asked for, however indirectly. Broader than CHOSEN: pasting an
+// album is a choice, so its tracks count here even though they aren't picks. A
+// radio track is not — nobody chose the track *or* the batch it came in, and a
+// station left running all night would otherwise own the leaderboard outright.
+// `is not` rather than `!=` so legacy rows, whose source is NULL, still count.
+const HUMAN_PICKED = sql`${songHistory.source} is not 'radio'`;
+
 export async function saveSong({ guildId, userId, userTag, title, url, duration, viaPlaylist, source }) {
     const db = getDb();
     if (!db) return;
@@ -137,7 +144,7 @@ export async function getTopSongs(guildId, limit = 5) {
             lastPlayedAt: max(songHistory.playedAt),
         })
         .from(songHistory)
-        .where(and(eq(songHistory.guildId, guildId), isNotNull(songHistory.title)))
+        .where(and(eq(songHistory.guildId, guildId), isNotNull(songHistory.title), HUMAN_PICKED))
         .groupBy(FINGERPRINT)
         // Ties break on recency, so the leaderboard is stable rather than
         // arbitrary when two tracks have the same play count.
@@ -218,7 +225,7 @@ export async function getTopDjs(guildId, limit = 5) {
         })
         .from(songHistory)
         // Legacy rows predate user_id and would group into one phantom "null DJ".
-        .where(and(eq(songHistory.guildId, guildId), CHOSEN, isNotNull(songHistory.userId)))
+        .where(and(eq(songHistory.guildId, guildId), CHOSEN, HUMAN_PICKED, isNotNull(songHistory.userId)))
         .groupBy(songHistory.userId)
         // Ties break on recency, matching getTopSongs — stable, not arbitrary.
         .orderBy(desc(sql`count(distinct ${FINGERPRINT})`), desc(max(songHistory.playedAt)))

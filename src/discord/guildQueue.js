@@ -17,12 +17,21 @@ import { captureError } from "@/lib/sentry.js";
 //   onDestroy() — the queue has torn itself down (drop it from the registry)
 //   onChange()  — playing/stopped changed (refresh the bot's presence)
 //   onTrackError(song, err) — a track was dropped; say so where it was asked for
+//   onRefill(queue) — the radio station is running low; go find more tracks
 export class GuildQueue {
-    constructor(guildId, { onDestroy, onChange, onTrackError } = {}) {
+    constructor(guildId, { onDestroy, onChange, onTrackError, onRefill } = {}) {
         this.guildId = guildId;
         this._onDestroy = onDestroy;
         this._onChange = onChange;
         this._onTrackError = onTrackError;
+        this._onRefill = onRefill;
+        // An active /radio station: { origin, seed, exclude, failures, requestedBy,
+        // requestedById }. Null when the queue is an ordinary playlist. It is
+        // per-guild playback state, so it lives here and dies with the queue —
+        // which is what makes /stop and the ⏹️ button turn the station off for
+        // free, since stop() destroys.
+        this.station = null;
+        this._refilling = false;
         this.songs = [];
         // Tracks that have already finished or been skipped, newest last. Lives
         // only as long as the queue does — /history is the persistent record;
@@ -47,12 +56,57 @@ export class GuildQueue {
     // difference between running out of songs (start the leave countdown) and
     // failing out of them, where nothing armed one.
     _advance({ idleTimer = true } = {}) {
+        // Before deciding anything: a station tops itself up. Deliberately not
+        // special-cased below — the refill lands via addMany, which clears the
+        // idle timer and starts playback if the queue drained first. So an empty
+        // queue arming its 5-minute leave countdown is harmless: the tracks
+        // arrive seconds later and cancel it.
+        this._maybeRefill();
         if (this.songs.length > 0) return void this._playNext();
         this.playing = false;
         if (!idleTimer) return;
         this._onChange?.();
         log.music(`Queue empty in guild ${this.guildId}`);
         this._idleTimeout = setTimeout(() => this.destroy(), TIMEOUTS.QUEUE_IDLE_MS);
+    }
+
+    // Start an endless station from one seed. The first batch is the caller's
+    // job; this is what keeps it going.
+    startStation({ id, title, requestedBy, requestedById }) {
+        this.station = {
+            origin: { id, title }, // what the user asked for — half the refills re-ask it
+            drift: { id, title }, // the newest track — the other half follow this
+            refills: 0,
+            exclude: new Set([id]),
+            failures: 0,
+            requestedBy,
+            requestedById,
+        };
+    }
+
+    stopStation() {
+        this.station = null;
+    }
+
+    // Top up when the wait list runs short. The `_refilling` flag matters: every
+    // track change calls _advance, so without it a slow refill would be started
+    // several times over and queue three copies of the same batch.
+    _maybeRefill() {
+        if (!this.station || this._refilling) return;
+        if (this.songs.length > LIMITS.RADIO_LOW_WATER) return;
+        this._refilling = true;
+        // The callback owns the awaiting; the flag is cleared by the caller
+        // through `refillDone` so this stays synchronous.
+        try {
+            this._onRefill?.(this);
+        } catch (err) {
+            this._refilling = false;
+            log.error(`[Queue ${this.guildId}] refill: ${err.message}`);
+        }
+    }
+
+    refillDone() {
+        this._refilling = false;
     }
 
     setConnection(connection) {
@@ -300,6 +354,9 @@ export class GuildQueue {
     }
 
     destroy() {
+        // The station goes with the queue: /stop and the ⏹️ button both land here,
+        // and a station that outlived its queue would refill into nothing.
+        this.station = null;
         clearTimeout(this._idleTimeout);
         clearTimeout(this._stallTimeout);
         clearTimeout(this._aloneTimeout);

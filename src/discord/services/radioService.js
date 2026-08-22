@@ -60,9 +60,17 @@ async function upNext(videoId) {
 
 function trackFrom(node) {
     const videoId = node.video_id;
+    // YouTube Music splits what a video title combines: `title` is the song alone
+    // ("lovely", "oficial", "RAIN III") and the artist lives in `author`. Every
+    // other source here yields a full video title, so taking `title` on its own
+    // made radio rows read as broken next to a /play row. Joined only when the
+    // title doesn't already carry the artist — some nodes are titled
+    // "Artist - Song" and would otherwise be doubled.
+    const title = String(node.title?.text ?? node.title ?? "Unknown");
+    const author = node.author ? String(node.author) : null;
     return {
         id: videoId,
-        title: String(node.title?.text ?? node.title ?? "Unknown"),
+        title: author && !title.toLowerCase().includes(author.toLowerCase()) ? `${author} - ${title}` : title,
         url: `https://www.youtube.com/watch?v=${videoId}`,
         // `duration` is an object here, unlike search's string — take the text and
         // format the seconds only if it is missing, so views get one shape.
@@ -116,6 +124,26 @@ async function searchFallback(seeds, exclude, limit) {
         }
     }
     return tracks;
+}
+
+// Radio tracks in queue shape. Shared by /radio's first batch and the station
+// refills so the two can't disagree about what a radio song is — the
+// viaPlaylist/source pair below is load-bearing in three different places.
+export function radioSongs(tracks, requestedBy, requestedById) {
+    return tracks.map(({ id: _id, ...track }) => ({
+        ...track,
+        requestedBy,
+        requestedById,
+        spotifyTrack: null,
+        // Plays, not picks — the same rule a playlist follows. This is what stops
+        // the station feeding on itself: radio tracks never become seeds, so it
+        // can't drift away from what a human actually chose.
+        viaPlaylist: true,
+        // Its own source, not "youtube". The audio does come from YouTube, but
+        // provenance is what asked for it, and only this tells a machine-picked
+        // row from a human one later — which /leaderboard needs.
+        source: "radio",
+    }));
 }
 
 function withDeadline(promise, ms) {

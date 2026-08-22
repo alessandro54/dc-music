@@ -1,6 +1,8 @@
 import { joinVoiceChannel } from "@discordjs/voice";
 
 import { GuildQueue } from "@/discord/guildQueue.js";
+import { radioFrom, radioSongs } from "@/discord/services/radioService.js";
+import { LIMITS } from "@/lib/constants.js";
 import { UserFacingError } from "@/lib/errors.js";
 import { log } from "@/lib/logger.js";
 
@@ -58,6 +60,7 @@ export function getOrCreateQueue(interaction, voiceChannel) {
         },
         onChange: updateActivity,
         onTrackError: (song, err) => announceDrop(interaction.guildId, song, err),
+        onRefill: (q) => void refillStation(q),
     });
     queues.set(interaction.guildId, queue);
     queue.setConnection(joinVoiceChannel({
@@ -66,6 +69,69 @@ export function getOrCreateQueue(interaction, voiceChannel) {
         adapterCreator: interaction.guild.voiceAdapterCreator,
     }));
     return queue;
+}
+
+// Keep an active station stocked. Lives here rather than in GuildQueue because it
+// is the discovery half — the entity only knows it is running low. Never throws:
+// a station that dies on a bad refill would take the listening session with it.
+async function refillStation(queue) {
+    const station = queue.station;
+    if (!station) return void queue.refillDone();
+    try {
+        // Alternate between the origin and the newest track. Neither alone works:
+        // a fixed seed has ~50 candidates total, so the exclude set covers them all
+        // within a handful of refills and the station starves — but pure drift
+        // walks off the map. Measured over 12 refills from one seed, drifting
+        // reached Eminem on one run and Filipino ballads on another; alternating
+        // stayed on Soft Cell, Human League and Kim Carnes, still 60/60 unique.
+        // Half the refills re-asking the origin is what keeps "radio of this song"
+        // true an hour in.
+        station.refills += 1;
+        const seed = station.refills % 2 === 1 ? station.origin : station.drift;
+        const tracks = await radioFrom([seed], {
+            limit: LIMITS.RADIO_REFILL,
+            exclude: station.exclude,
+        });
+
+        // Destroyed while we were awaiting (/stop, everyone left) — the queue is
+        // gone, so adding to it would resurrect a dead session.
+        if (queues.get(queue.guildId) !== queue || !queue.station) return;
+
+        if (!tracks.length) {
+            station.failures += 1;
+            log.warn(
+                `[radio ${queue.guildId}] empty refill ${station.failures}/${LIMITS.RADIO_MAX_FAILURES}`,
+            );
+            // Bounded on purpose. An unbounded retry is how a YouTube-side outage
+            // turns one station into a permanent hot loop against a dead API.
+            if (station.failures >= LIMITS.RADIO_MAX_FAILURES) {
+                queue.stopStation();
+                announce(queue.guildId, "📡 Radio ran out of suggestions — station stopped.");
+            }
+            return;
+        }
+
+        station.failures = 0;
+        for (const track of tracks) station.exclude.add(track.id);
+        const songs = radioSongs(tracks, station.requestedBy, station.requestedById);
+        station.drift = { id: tracks.at(-1).id, title: tracks.at(-1).title };
+        queue.addMany(songs);
+        log.music(
+            log.gray(`[radio] +${songs.length} · refill ${station.refills} via ${seed.title}`),
+        );
+    } catch (err) {
+        log.error(`[radio ${queue.guildId}] refill: ${err.message}`);
+    } finally {
+        queue.refillDone();
+    }
+}
+
+// Plain message into the channel the music is being requested from. Same channel
+// map announceDrop uses, and the same rule: a failed send must never propagate.
+function announce(guildId, content) {
+    announceChannels.get(guildId)?.send(content).catch((err) => {
+        log.warn(`[queue ${guildId}] could not announce: ${err.message}`);
+    });
 }
 
 // Add resolved songs to the queue. Returns a tagged result the command renders:
