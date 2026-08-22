@@ -2,6 +2,7 @@ import debug from "@/discord/commands/admin/debug.js";
 import setcookies from "@/discord/commands/admin/setcookies.js";
 import setup from "@/discord/commands/admin/setup.js";
 import coinflip from "@/discord/commands/fun/coinflip.js";
+import collection from "@/discord/commands/fun/collection.js";
 import pokemon from "@/discord/commands/fun/pokemon.js";
 import poll from "@/discord/commands/fun/poll.js";
 import help from "@/discord/commands/info/help.js";
@@ -45,7 +46,7 @@ export const router = createRouter()
     })
     .include("tracks", [leaderboard], { label: "📈 Tracks" })
     .include("moderation", [kick, timeout], { label: "🛡️ Moderation" })
-    .include("fun", [coinflip, poll, pokemon], { label: "🎮 Fun" })
+    .include("fun", [coinflip, poll, pokemon, collection], { label: "🎮 Fun" })
     .include("info", [help, serverinfo], { label: "ℹ️ Info" })
     .include("admin", [debug, setcookies, setup], { hidden: true });
 

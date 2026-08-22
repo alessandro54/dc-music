@@ -1,4 +1,5 @@
 import { queues } from "@/discord/services/playbackService.js";
+import { stopSpawns } from "@/discord/services/spawnService.js";
 import { shutdownStreams } from "@/discord/services/ytdlpService.js";
 import { log } from "@/lib/logger.js";
 
@@ -14,6 +15,7 @@ export function installShutdownHandlers(client) {
             shuttingDown = true;
             log.info(`${signal} — shutting down`);
             try {
+                stopSpawns();
                 for (const queue of [...queues.values()]) queue.destroy();
                 await shutdownStreams();
                 await client.destroy();

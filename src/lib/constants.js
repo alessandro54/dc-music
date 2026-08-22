@@ -19,6 +19,9 @@ export const LIMITS = {
     RADIO_LOW_WATER: 3, // refill the station once the wait list drops to this
     RADIO_REFILL: 5, // tracks per refill — small, so the seed drifts often
     RADIO_MAX_FAILURES: 2, // consecutive empty refills before the station gives up
+    POKEBALLS_MAX: 5, // charges a trainer can hold
+    POKEBALL_REFILL_MIN: 30, // one charge back every this many minutes
+    COLLECTION_PAGE: 25, // rows shown per /collection page
 };
 
 export const TIMEOUTS = {
@@ -27,6 +30,8 @@ export const TIMEOUTS = {
     VOICE_RECONNECT_MS: 5_000,
     STREAM_STALL_MS: 25_000, // skip if a track stays buffering this long (yt-dlp stalled)
     COOKIE_CHECK_MS: 21_600_000, // re-check the YouTube session every 6h — it rotates mid-uptime
+    POKEMON_SPAWN_MS: 600_000, // a wild pokémon appears every 10 minutes
+    POKEAPI_MS: 4_000, // fetch has no default timeout; Discord expires the token at 15min
     RADIO_SEED_MS: 4_000, // per-seed automix budget; measured 740-950ms, so this is a hang guard
 };
 

@@ -6,6 +6,7 @@ import "@/bootstrap.js";
 import { initDb } from "@/db/client.js";
 import { createClient } from "@/discord/client.js";
 import { warmToken } from "@/discord/services/spotifyService.js";
+import { startSpawns } from "@/discord/services/spawnService.js";
 import { logCookieHealth, startCookieWatch } from "@/discord/services/ytdlpService.js";
 import { installShutdownHandlers } from "@/discord/shutdown.js";
 import { startHealthServer } from "@/lib/health.js";
@@ -35,6 +36,10 @@ logCookieHealth()
 // Discord connects — Dokku's healthcheck needs something to poll from the moment
 // the container starts, not once the bot is up.
 startHealthServer(Deno.env.get("PORT") || 3000, client);
+
+// Wild pokémon, once the client can actually fetch a channel. No-op unless
+// POKEMON_SPAWN_CHANNEL_ID is set.
+client.once("ready", () => startSpawns(client));
 
 installShutdownHandlers(client);
 

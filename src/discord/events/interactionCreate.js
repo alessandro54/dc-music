@@ -1,14 +1,17 @@
 import { MessageFlags } from "discord.js";
 
 import { handleNowPlayingButton, NP_PREFIX } from "@/discord/buttons.js";
+import { handleCatchButton, PK_PREFIX } from "@/discord/pokemonButtons.js";
 import { log } from "@/lib/logger.js";
 import { captureError, userFrom } from "@/lib/sentry.js";
 
 export default {
     name: "interactionCreate",
     async execute(interaction, client) {
-        if (interaction.isButton() && interaction.customId.startsWith(NP_PREFIX)) {
-            return handleNowPlayingButton(interaction);
+        if (interaction.isButton()) {
+            if (interaction.customId.startsWith(NP_PREFIX)) return handleNowPlayingButton(interaction);
+            if (interaction.customId.startsWith(PK_PREFIX)) return handleCatchButton(interaction);
+            return;
         }
 
         const command = client.commands.get(interaction.commandName);

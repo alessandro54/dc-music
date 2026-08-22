@@ -55,6 +55,7 @@ YTDLP_POT_BASE_URL=          # http://bgutil-provider:4416 — PO-token provider
 # YTDLP_PLAYER_CLIENTS=      # optional — override the streaming player_client pin without a deploy
 YOUTUBE_COOKIES=             # Netscape cookies — REQUIRED on this datacenter IP (LOGIN_REQUIRED)
 OWNER_ID=                    # Discord user id allowed to run /debug (admin-only + owner-gated)
+# POKEMON_SPAWN_CHANNEL_ID=  # optional — where wild pokémon appear; unset disables spawns entirely
 SENTRY_DSN=                  # optional — error monitoring (org alessandro54, project music-bot); unset = SDK no-op
 # SENTRY_ENVIRONMENT=        # optional override; defaults to NODE_ENV=production ? production : development
 # DB_URL=sqlite:<path>       # only if not using Turso (local dev fallback ./bot.db)
@@ -430,6 +431,53 @@ credentials are already there. Spotify-sourced songs carry their art already;
   cold-start one would blank that cover permanently.
 - **Playlists are skipped on purpose** — 100 items would mean 100 lookups for art
   nobody has looked at yet.
+
+## Pokémon (`services/pokemonService.js`, `services/spawnService.js`)
+
+A collecting game bolted onto the existing `/pokemon` sprite command. Three rules,
+all enforced in SQL rather than in JS, because all three are races:
+
+- **A wild pokémon spawns every 10 min** (`TIMEOUTS.POKEMON_SPAWN_MS`) into
+  `POKEMON_SPAWN_CHANNEL_ID`. Unset disables it. 144 messages/day, hence a config
+  var rather than "wherever the bot was last used".
+- **First presser keeps it.** `claimSpawn` is one `UPDATE … WHERE caught_by is null`,
+  so SQLite picks the winner and `rowsAffected` reports it.
+- **Five pokéballs, +1 per 30 min, cap 5.** Charges are *derived* from
+  `(now - refilled_at)` on every read, never ticked down by a timer — a deploy
+  would otherwise hand everyone a full pouch. `refilled_at` advances by whole
+  intervals when charges are granted (so a part-elapsed interval isn't lost) and
+  pins to `now` when the pouch is full (or time banks while capped and the next
+  spend refills instantly).
+- **One of each species per trainer.** Not a unique index: spawn rows exist
+  *before* anyone claims them, so an index on `(guild, caught_by, slug)` would let
+  only one *unclaimed* spawn of a species exist at a time. It's a `NOT EXISTS` in
+  the claim instead.
+- **A ball is spent before the claim and refunded if the claim loses** — a charge
+  is cheap to give back, a claim is not. Owning the species is checked first, so a
+  duplicate costs nothing.
+- **`pokemon_spawns` is the ledger**, so a collection is a query, not a table.
+
+`/pokemon [name]` is **lookup only** — no catch button. Catching goes through the
+spawns, where a ball is spent and the race decides; a button on a named lookup
+would hand anyone a legendary on demand.
+
+**PokéAPI** backs the card. Two calls (`/pokemon` + `/pokemon-species`) fired
+concurrently, cached in memory *and* in the `pokedex` table — entries are immutable,
+the one case where a cache with no expiry is correct, and the DB layer is what makes
+the first lookup after a deploy free (measured 2ms vs 393ms). `fetch` has no default
+timeout, so `TIMEOUTS.POKEAPI_MS` bounds it. A failure returns `null` and the card
+degrades to name + sprite: a fun command must not break because a free API had a bad
+minute.
+- **Name resolution**: 874 of colorscripts' 905 names are valid PokéAPI slugs. The
+  other 31 have no bare form (`deoxys` → `deoxys-normal`), so on a 404 the species
+  response — already fetched — names its own default variety. No hardcoded table to rot.
+- Flavour text carries **soft hyphens** (U+00AD) at the games' line breaks; the
+  hyphen has to take the following whitespace with it or `becomes` renders as
+  `be comes`.
+- Stat bars scale to **200 over 16 blocks**, not 255 over 12: 255 is the true
+  ceiling (Blissey) but nothing approaches it, so real stats squashed into 4-6
+  blocks and 130 attack drew almost the same bar as 80. Measured across a spread of
+  pokémon, this uses 15 of 16 possible lengths against 11 of 12.
 
 ## Database (`src/db/`)
 - **Drizzle ORM** over `@libsql/client` for both environments. `client.js` = init + client pick; `schema.js` = drizzle table def (source of truth); `migrations/` = drizzle-kit output, applied on boot via `migrate()` (`drizzle-orm/libsql/migrator`). song_history queries live in `src/discord/services/trackService.js` (the one query module — it stays with the domain, not in `db/`) (`saveSong`/`getHistory`/`getRecentSongs`/`getSongMeta`).
