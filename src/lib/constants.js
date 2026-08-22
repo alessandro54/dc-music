@@ -12,6 +12,10 @@ export const LIMITS = {
     POLL_OPTIONS: 5,
     AUTOCOMPLETE_RESULTS: 5,
     PLAYED_HISTORY: 25, // per-guild in-memory undo stack behind /previous
+    RADIO_TRACKS: 10, // default /radio batch
+    RADIO_MAX: 25,
+    RADIO_SEEDS: 5, // newest picks used as automix seeds — fetched concurrently
+    RADIO_HISTORY_WINDOW: 25, // pulled once: the newest few seed, all of them exclude
 };
 
 export const TIMEOUTS = {
@@ -20,6 +24,7 @@ export const TIMEOUTS = {
     VOICE_RECONNECT_MS: 5_000,
     STREAM_STALL_MS: 25_000, // skip if a track stays buffering this long (yt-dlp stalled)
     COOKIE_CHECK_MS: 21_600_000, // re-check the YouTube session every 6h — it rotates mid-uptime
+    RADIO_SEED_MS: 4_000, // per-seed automix budget; measured 740-950ms, so this is a hang guard
 };
 
 export const POLL_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"];
