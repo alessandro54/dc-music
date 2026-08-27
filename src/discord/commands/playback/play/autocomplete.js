@@ -19,7 +19,7 @@ const isResolvableUrl = (query) => RESOLVERS.some((r) => r !== spotify && r.matc
 function suggestions(videos, query) {
     if (!videos.length) return [{ name: `🔍 ${query}`.slice(0, 100), value: query }];
     for (const v of videos) primeVideoInfo(v);
-    return videos.map((v) => ({ name: `${v.title} · ${v.duration}`.slice(0, 100), value: v.url }));
+    return videos.map((v) => ({ name: `🎵 ${v.title} · ${v.duration}`.slice(0, 100), value: v.url }));
 }
 
 // /play's very first focus event fires with an empty query, so the recents ARE
@@ -43,7 +43,7 @@ export async function autocomplete(interaction) {
 
     if (query.length < 2) {
         const recent = await recentSongs(interaction.guildId);
-        return respond(recent.map((s) => ({ name: s.title.slice(0, 100), value: s.url })));
+        return respond(recent.map((s) => ({ name: `🕘 ${s.title}`.slice(0, 100), value: s.url })));
     }
 
     let timer;
@@ -65,7 +65,7 @@ export async function autocomplete(interaction) {
         // An autocomplete gets exactly one response and a late one is thrown
         // away, so anything already in hand beats anything fetched. A cached
         // answer for this query is served without touching the network at all.
-        const cached = peekSearch(query, LIMITS.AUTOCOMPLETE_RESULTS);
+        const cached = peekSearch(query, LIMITS.AUTOCOMPLETE_SONGS);
         if (cached) return respond(suggestions(cached, query));
 
         // Nothing for this query yet, but the previous keystroke's results are
@@ -74,15 +74,15 @@ export async function autocomplete(interaction) {
         // background, so the next keystroke is an instant cache hit. This is what
         // turns a lookup that trails the typing by ~450ms per character into one
         // that keeps up.
-        const stale = peekSearchPrefix(query, LIMITS.AUTOCOMPLETE_RESULTS);
+        const stale = peekSearchPrefix(query, LIMITS.AUTOCOMPLETE_SONGS);
         if (stale) {
-            void searchVideos(query, LIMITS.AUTOCOMPLETE_RESULTS).catch(() => {});
+            void searchVideos(query, LIMITS.AUTOCOMPLETE_SONGS).catch(() => {});
             return respond(suggestions(stale, query));
         }
 
         // Real YouTube video results via Innertube — value is the video URL
         // so the pick plays exactly that video (no re-search on submit).
-        const videos = await Promise.race([searchVideos(query, LIMITS.AUTOCOMPLETE_RESULTS), deadline]);
+        const videos = await Promise.race([searchVideos(query, LIMITS.AUTOCOMPLETE_SONGS), deadline]);
         return respond(suggestions(videos, query));
     } catch (err) {
         if (err.message !== "timeout") log.error(`[autocomplete] ${err.message}`);

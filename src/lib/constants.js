@@ -14,7 +14,8 @@ export const LIMITS = {
     LEADERBOARD: 5,
     DJ_LEADERBOARD: 5,
     POLL_OPTIONS: 5,
-    AUTOCOMPLETE_RESULTS: 5,
+    AUTOCOMPLETE_RESULTS: 5, // recents shown on an empty /play query
+    AUTOCOMPLETE_SONGS: 10, // live search rows — the cache already fetches this width
     PLAYED_HISTORY: 25, // per-guild in-memory undo stack behind /previous
     RADIO_TRACKS: 10, // default /radio batch
     RADIO_MAX: 25,
