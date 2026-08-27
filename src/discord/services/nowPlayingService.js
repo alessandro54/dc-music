@@ -16,24 +16,51 @@ import { log } from "@/lib/logger.js";
 // registry: playbackService owns the lifecycle and calls in here, so importing
 // `queues` back would make that a cycle.
 //
-// panels: guildId -> { channel, message, timer, stale, lastBody }
+// panels: guildId -> { channel, message, timer, stale, lastBody, chain }
 const panels = new Map();
+
+// Every operation that can touch a panel's message runs on the panel's own
+// chain, one at a time. Without this, two refreshes in flight together — and
+// bursts are now normal: _start, then the metadata landing, then the artwork
+// landing, each fire onChange within milliseconds — both saw `message: null`
+// and both SENT, leaving an orphan dashboard frozen at 0:00 next to the live
+// one. The same race let a queue destroy itself mid-send and orphan the
+// message the send returned. Serializing per panel closes both; the body
+// compare keeps the queued-up extras nearly free.
+function enqueueOp(panel, op) {
+    panel.chain = (panel.chain ?? Promise.resolve()).then(op).catch((err) => {
+        log.warn(`[np] panel op: ${err.message}`);
+    });
+    return panel.chain;
+}
 
 // Start (or re-target) a guild's panel. Called on every command that touches the
 // queue, so the panel follows the channel the music is actually requested from.
 export function attachPanel(queue, channel) {
     const panel = panels.get(queue.guildId);
     if (panel && panel.channel.id === channel.id) return;
-    // Moved channels: the old message can't be edited into the new one.
-    if (panel) void remove(panel);
+    // Moved channels: the old message can't be edited into the new one. The
+    // removal rides the old panel's chain so an in-flight send lands first.
+    if (panel) {
+        stopTicker(panel);
+        void enqueueOp(panel, () => remove(panel));
+    }
     panels.set(queue.guildId, { channel, message: null, timer: null, stale: false, lastBody: null });
 }
 
 // Render the current state into the panel — creating the message the first time,
 // editing it afterwards, and re-posting it at the bottom once chat has moved on.
-export async function refreshPanel(queue) {
+export function refreshPanel(queue) {
     const panel = panels.get(queue.guildId);
-    if (!panel) return;
+    if (!panel) return Promise.resolve();
+    return enqueueOp(panel, () => _refresh(queue, panel));
+}
+
+async function _refresh(queue, panel) {
+    // The panel this op was queued against may have been replaced (attachPanel
+    // to another channel) or cleared (queue destroyed) while it waited its
+    // turn. Rendering into the dead one would recreate the orphan.
+    if (panels.get(queue.guildId) !== panel) return;
 
     // Nothing playing: the queue lives on through its idle grace period, but a
     // panel still advertising the track that just ended — with buttons that now
@@ -78,6 +105,9 @@ export async function movePanel(queue, channel) {
     await refreshPanel(queue);
 }
 
+// (movePanel stays a thin wrapper: attachPanel swaps the entry synchronously,
+// and the refresh rides the new panel's chain like every other operation.)
+
 // A message landed in a panel's channel: the panel is no longer the last thing
 // there. Marked rather than moved — the next tick does the work, which coalesces
 // a burst of chat into one re-post instead of one per message.
@@ -95,7 +125,10 @@ export async function clearPanel(guildId) {
     if (!panel) return;
     panels.delete(guildId);
     stopTicker(panel);
-    await remove(panel);
+    // On the chain: a send may be in flight, and its message only becomes
+    // deletable once it lands. Removing immediately would miss it and leave
+    // the orphan this function exists to prevent.
+    await enqueueOp(panel, () => remove(panel));
 }
 
 function startTicker(queue, panel) {
