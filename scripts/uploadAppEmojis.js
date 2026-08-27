@@ -25,7 +25,17 @@ const GLYPHS = {
     np_skip: (x, y) => triRight(x, y, 0.14, 0.66) || (bar(x, 0.74, 0.84) && v(y)),
     // ⏹ square
     np_stop: (x, y) => bar(x, 0.24, 0.76) && bar(y, 0.24, 0.76),
+    // 🎵 beamed eighth notes — two heads, two stems, a slanted beam
+    np_note: (x, y) =>
+        disc(x, y, 0.30, 0.74, 0.115) || disc(x, y, 0.68, 0.66, 0.115) ||
+        (bar(x, 0.365, 0.425) && y >= slant(x) && y < f(0.74)) ||
+        (bar(x, 0.745, 0.805) && y >= slant(x) && y < f(0.66)) ||
+        (x >= f(0.365) && x < f(0.805) && y >= slant(x) && y < slant(x) + f(0.10)),
 };
+
+const disc = (x, y, cx, cy, r) => (x - f(cx)) ** 2 + (y - f(cy)) ** 2 <= f(r) ** 2;
+// The beam's top edge, sloping up left→right like a real beam.
+const slant = (x) => f(0.30) - (x - f(0.365)) * 0.18;
 
 const f = (r) => Math.round(r * SIZE);
 const bar = (p, from, to) => p >= f(from) && p < f(to);

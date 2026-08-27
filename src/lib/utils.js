@@ -31,7 +31,7 @@ export function durationToMs(ts) {
 // spans also keep the bar identical across themes and platform emoji fonts.
 const EIGHTHS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 
-export function progressBar(elapsed, total, length = 24) {
+export function progressBar(elapsed, total, length = 32) {
     const ratio = Math.min(Math.max(elapsed / total, 0), 1);
     const cells = ratio * length;
     const full = Math.floor(cells);

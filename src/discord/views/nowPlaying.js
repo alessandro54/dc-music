@@ -13,7 +13,7 @@ import {
     ThumbnailBuilder,
 } from "discord.js";
 
-import { appEmoji } from "@/discord/services/appEmojiService.js";
+import { appEmoji, appEmojiText } from "@/discord/services/appEmojiService.js";
 import { COLORS } from "@/lib/constants.js";
 import { durationToMs, formatMs, progressBar } from "@/lib/utils.js";
 
@@ -162,7 +162,7 @@ const fmtBar = (i, steps) => "─".repeat(i) + "●" + "─".repeat(steps - 1 - 
 // The full dashboard: heading, art + credits, stats, progress, controls.
 export function nowPlayingView(queue) {
     const song = queue.current;
-    const container = shell("🎵 Now Playing", song, creditLines(queue, song));
+    const container = shell(`${appEmojiText("np_note", "🎵")} Now Playing`, song, creditLines(queue, song));
     container.addTextDisplayComponents(statLine(queue, song), progressLine(queue, song));
     const totalMs = durationToMs(song.duration);
     if (totalMs) container.addActionRowComponents(seekRow(song, totalMs));

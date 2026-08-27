@@ -26,3 +26,10 @@ export function appEmoji(name, fallback) {
     const emoji = emojis.get(name);
     return emoji ? { id: emoji.id, name: emoji.name } : fallback;
 }
+
+// The same emoji as message text — headings, labels. `<:name:id>` renders the
+// uploaded glyph anywhere markdown does.
+export function appEmojiText(name, fallback) {
+    const emoji = emojis.get(name);
+    return emoji ? `<:${emoji.name}:${emoji.id}>` : fallback;
+}

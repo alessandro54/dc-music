@@ -72,6 +72,10 @@ function onPlaying(queue) {
 
 function onIdle(queue) {
     clearTimeout(queue._stallTimeout);
+    // A seek killed its own stream and is about to play the same track from
+    // the new offset — this Idle is the kill's echo, not the track ending.
+    // Shifting here is what made a seek eat the song (and with it the queue).
+    if (queue._seeking) return;
     queue._killStream();
     queue.seekOffset = 0;
     queue._stallRetried = false;

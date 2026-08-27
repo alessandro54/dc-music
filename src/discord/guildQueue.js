@@ -51,6 +51,7 @@ export class GuildQueue {
         this.seekOffset = 0;
         this._streamStartedAt = null;
         this._stallRetried = false;
+        this._seeking = false;
         // The next track, extracted ahead of time: { song, resource } | null.
         // See _maybePrefetch for why this is allowed to overlap the live stream.
         this._next = null;
@@ -410,6 +411,13 @@ export class GuildQueue {
 
     async seek(seconds) {
         if (!this.current?.url) return false;
+        // Killing the live stream makes the player fire Idle — which the Idle
+        // handler reads as "track finished": it shifts the current song off and
+        // advances, so the seek's own stream lands in a queue that already
+        // forgot the track (observed: a single-track queue answered "Nothing
+        // playing" after a seek). Same hazard previous() guards with
+        // _replaying; this is seek's own flag, checked in onIdle.
+        this._seeking = true;
         this._killStream();
         this.seekOffset = seconds;
         try {
@@ -420,9 +428,13 @@ export class GuildQueue {
             });
             this.resource = resource;
             this.player.play(resource);
+            this._seeking = false;
             this._onChange?.();
             return true;
         } catch (err) {
+            // The track is still songs[0]; leave the queue idle-but-intact so
+            // the next action (another seek, skip, /play) finds it in place.
+            this._seeking = false;
             log.error(`[Queue ${this.guildId}] Seek error: ${err.message}`);
             captureError(err, {
                 tags: { stage: "seek", guild: this.guildId },

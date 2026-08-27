@@ -186,3 +186,25 @@ Deno.test("destroy reaps a held prefetch", () => {
         }, 5)
     );
 });
+
+Deno.test("the Idle echo of a seek's stream kill does not eat the track", () => {
+    // seek() kills the live stream, which makes the player fire Idle before the
+    // new stream lands. Unguarded, the Idle handler shifted the current song
+    // off and a single-track queue answered "Nothing playing" after a seek.
+    const queue = bareQueue();
+    const real = new GuildQueue("seek-echo", {});
+    try {
+        real.songs = [mkSong("only-track")];
+        real.playing = true;
+        real._seeking = true; // what seek() sets before killing the stream
+        real.player.emit("idle");
+        assertEquals(real.songs.length, 1, "the seeking track must stay at the front");
+        assert(real.playing, "the queue must not wind down on the echo");
+        real._seeking = false;
+        real.player.emit("idle");
+        assertEquals(real.songs.length, 0, "a genuine Idle still advances");
+    } finally {
+        real.destroy();
+        queue.destroy();
+    }
+});
