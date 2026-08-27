@@ -37,6 +37,23 @@ export function cacheDuration(videoId, duration) {
     if (cached) cached.duration = duration;
 }
 
+// Search results already carry title, duration and thumbnail — the exact shape
+// fetchVideoInfo would spend a network race reassembling. Priming the cache from
+// them means the /play submit of a picked suggestion costs a Map lookup, and —
+// because the duration arrives too — the backfillDuration yt-dlp never spawns
+// for that track. Deliberately no clobber: a primed entry must not overwrite one
+// enriched by the sidecar (cacheDuration writes into the existing object).
+export function primeVideoInfo(video) {
+    const videoId = extractVideoId(video.url);
+    if (!videoId || metaCache.has(videoId)) return;
+    cacheMeta(videoId, {
+        title: video.title,
+        url: video.url,
+        duration: video.duration ?? null,
+        thumbnail: video.thumbnail ?? ytThumb(videoId),
+    });
+}
+
 export function clearMetaCache() {
     metaCache.clear();
 }

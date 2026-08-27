@@ -44,10 +44,13 @@ export async function findAlbumArt(title, { timeoutMs = 1200 } = {}) {
     if (!query) return null;
     if (cache.has(query)) return cache.get(query);
 
+    let timer;
     try {
         const res = await Promise.race([
             searchTrack(query),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("artwork timeout")), timeoutMs)),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error("artwork timeout")), timeoutMs);
+            }),
         ]);
         const images = res?.tracks?.items?.[0]?.album?.images ?? [];
         // images[0] is the largest Spotify offers (640x640). A genuine "Spotify
@@ -61,6 +64,10 @@ export async function findAlbumArt(title, { timeoutMs = 1200 } = {}) {
         // top of the search — caching that would blank this cover permanently.
         log.warn(`[artwork] ${query}: ${err.message}`);
         return null;
+    } finally {
+        // The deadline keeps ticking after an early answer or failure otherwise
+        // — harmless in prod, but it fails any test under the timer sanitizer.
+        clearTimeout(timer);
     }
 }
 

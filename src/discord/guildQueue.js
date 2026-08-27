@@ -173,7 +173,30 @@ export class GuildQueue {
     async add(song) {
         clearTimeout(this._idleTimeout);
         this.songs.push(song);
+        this._absorbLookups(song);
         if (!this.playing) await this._playNext();
+    }
+
+    // The lookups the resolver refused to wait for — metadata (`_meta`) and
+    // album art (`_artwork`) — ride on the song as promises that resolve to
+    // VALUES: resolveQuery copies songs on their way in, so a resolver-side
+    // mutation would land on an object this queue never sees. They are absorbed
+    // here, into the queue's own copy, the moment they settle; each landing
+    // fires onChange so the live panel redraws instead of waiting for its tick.
+    // Wired into every add path, not into _start, so a track waiting deep in
+    // the queue shows its real title in /queue too.
+    _absorbLookups(song) {
+        song._meta?.then((info) => {
+            if (!info) return;
+            song.title = info.title ?? song.title;
+            song.duration ??= info.duration;
+            this._onChange?.();
+        });
+        song._artwork?.then((art) => {
+            if (!art || song.thumbnail === art) return;
+            song.thumbnail = art;
+            this._onChange?.();
+        });
     }
 
     // Jump the queue: land right behind the playing track instead of at the tail.
@@ -185,6 +208,7 @@ export class GuildQueue {
         clearTimeout(this._idleTimeout);
         const at = this.playing ? 1 : 0;
         this.songs.splice(at, 0, ...songs);
+        for (const song of songs) this._absorbLookups(song);
         if (!this.playing) this._playNext();
         return at;
     }
@@ -193,6 +217,7 @@ export class GuildQueue {
         clearTimeout(this._idleTimeout);
         const wasEmpty = this.songs.length === 0;
         this.songs.push(...songs);
+        for (const song of songs) this._absorbLookups(song);
         if (!this.playing && wasEmpty) this._playNext();
     }
 
@@ -248,16 +273,21 @@ export class GuildQueue {
                 )
             }`,
         );
-        saveSong({
-            guildId: this.guildId,
-            userId: song.requestedById,
-            userTag: song.requestedBy,
-            title: song.title,
-            url: song.url,
-            duration: song.duration,
-            viaPlaylist: song.viaPlaylist,
-            source: song.source,
-        });
+        // History records the real title, so a song whose metadata is still in
+        // flight (placeholder title) waits for it — the save was already
+        // fire-and-forget, this only sequences it behind the lookup.
+        (song._meta ?? Promise.resolve()).then(() =>
+            saveSong({
+                guildId: this.guildId,
+                userId: song.requestedById,
+                userTag: song.requestedBy,
+                title: song.title,
+                url: song.url,
+                duration: song.duration,
+                viaPlaylist: song.viaPlaylist,
+                source: song.source,
+            })
+        );
     }
 
     // A track that could not be played: report it, drop it, keep the queue
