@@ -39,11 +39,11 @@ const SOURCE_LABELS = {
 // `content`/`embeds` are cleared explicitly rather than left off: /play may have
 // already answered with a plain "🔍 Searching…" message, and turning that into a
 // Components V2 message on edit is only legal once its content is gone.
-export const componentPayload = (components) => ({
+export const componentPayload = (components, { ephemeral = false } = {}) => ({
     components,
     content: null,
     embeds: [],
-    flags: MessageFlags.IsComponentsV2,
+    flags: ephemeral ? MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral : MessageFlags.IsComponentsV2,
     allowedMentions: { parse: [] },
 });
 
@@ -95,7 +95,7 @@ function progressLine(queue, song) {
     const elapsedMs = (queue.resource?.playbackDuration ?? 0) + queue.seekOffset * 1000;
     const totalMs = durationToMs(song.duration);
     const content = totalMs
-        ? `${progressBar(elapsedMs, totalMs)}\n\`${formatMs(elapsedMs)}\` / \`${song.duration}\``
+        ? `\`${progressBar(elapsedMs, totalMs)}\`\n\`${formatMs(elapsedMs)}\` / \`${song.duration}\``
         : `\`${formatMs(elapsedMs)}\` elapsed`;
     return new TextDisplayBuilder().setContent(content);
 }

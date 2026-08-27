@@ -154,6 +154,13 @@ function announce(guildId, content) {
 //   { kind: "single",    song, isFirst, position }
 //   { kind: "many",      count, playlistName }
 // `next` puts them at the front of the wait list instead of the tail (/playnow).
+// Adding tracks changes the panel's Queue Size chip; the queue itself only
+// fires onChange on playback transitions, so nudge the panel here — the body
+// compare makes it free when nothing visible changed.
+function touchPanel(queue) {
+    refreshPanel(queue).catch(() => {});
+}
+
 export function enqueue(queue, songs, playlistName, { next = false } = {}) {
     if (songs.length === 1) {
         const song = songs[0];
@@ -168,10 +175,12 @@ export function enqueue(queue, songs, playlistName, { next = false } = {}) {
             index = queue.songs.length;
             queue.add(song);
         }
+        touchPanel(queue);
         return { kind: "single", song, isFirst: index === 0, position: index + 1 };
     }
 
     if (next) queue.addNext(songs);
     else queue.addMany(songs);
+    touchPanel(queue);
     return { kind: "many", count: songs.length, playlistName };
 }

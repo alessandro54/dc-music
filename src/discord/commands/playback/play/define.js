@@ -103,9 +103,16 @@ async function run(interaction, voiceChannel, { name, next }) {
             // Caller-only, so it doesn't push that panel up the channel — unless
             // a placeholder already claimed the interaction publicly, in which
             // case ephemeral is no longer available.
+            // Caller-only, like the Starting ack: the live panel is the public
+            // artifact, and a public card per added track pushes it up the
+            // channel. Ephemeral is only possible while the interaction is
+            // unclaimed — a placeholder already went out publicly and an edit
+            // cannot take it private.
             payload = result.isFirst
                 ? starting(`▶️ Starting **${result.song.title}**…`, placeholder)
-                : componentPayload(queuedView(result.song, result.position, queue, { next }));
+                : componentPayload(queuedView(result.song, result.position, queue, { next }), {
+                    ephemeral: !placeholder,
+                });
             break;
         case "many":
             payload = {

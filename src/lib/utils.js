@@ -25,12 +25,16 @@ export function durationToMs(ts) {
     return secs !== null ? secs * 1000 : null;
 }
 
-// A slider, not a meter: the knob marks the position and the track continues
-// past it, which is what the Now Playing dashboard is imitating. Box-drawing
-// characters rather than blocks — they sit on the text baseline, so the row
-// reads as one line instead of a stack of squares.
-export function progressBar(elapsed, total, length = 22) {
+// TUI-style meter: full blocks, one partial-eighth block for sub-character
+// precision, light shade for the remainder. Rendered inside inline code by the
+// caller — the block characters only line up in the monospace font, and code
+// spans also keep the bar identical across themes and platform emoji fonts.
+const EIGHTHS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
+
+export function progressBar(elapsed, total, length = 24) {
     const ratio = Math.min(Math.max(elapsed / total, 0), 1);
-    const filled = Math.round(ratio * (length - 1));
-    return `${"━".repeat(filled)}🔘${"─".repeat(length - 1 - filled)}`;
+    const cells = ratio * length;
+    const full = Math.floor(cells);
+    const partial = full < length ? EIGHTHS[Math.floor((cells - full) * 8)] : "";
+    return "█".repeat(full) + partial + "░".repeat(length - full - (partial ? 1 : 0));
 }
