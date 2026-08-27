@@ -45,7 +45,14 @@ export function attachPanel(queue, channel) {
         stopTicker(panel);
         void enqueueOp(panel, () => remove(panel));
     }
-    panels.set(queue.guildId, { channel, message: null, timer: null, stale: false, lastBody: null });
+    panels.set(queue.guildId, {
+        channel,
+        message: null,
+        timer: null,
+        stale: false,
+        lastBody: null,
+        seekOpen: false,
+    });
 }
 
 // Render the current state into the panel — creating the message the first time,
@@ -72,7 +79,7 @@ async function _refresh(queue, panel) {
     }
     startTicker(queue, panel);
 
-    const { components, files } = nowPlayingPanel(queue);
+    const { components, files } = nowPlayingPanel(queue, { seekOpen: panel.seekOpen });
     const payload = componentPayload(components);
     // The bar image regenerates per render; `attachments: []` drops the
     // previous upload on edit so they don't accumulate on the message.
@@ -103,6 +110,15 @@ async function _refresh(queue, panel) {
         panel.message = null;
         panel.lastBody = null;
     }
+}
+
+// Fold the digit seek rows in or out — presentation state, so it lives with
+// the panel rather than the queue, and resets with it.
+export async function toggleSeekRows(queue) {
+    const panel = panels.get(queue.guildId);
+    if (!panel) return;
+    panel.seekOpen = !panel.seekOpen;
+    await refreshPanel(queue);
 }
 
 // Force the panel back to the bottom of the channel — what `/np` does now that

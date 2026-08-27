@@ -25,6 +25,8 @@ const GLYPHS = {
     np_skip: (x, y) => triRight(x, y, 0.14, 0.66) || (bar(x, 0.74, 0.84) && v(y)),
     // ⏹ square
     np_stop: (x, y) => bar(x, 0.24, 0.76) && bar(y, 0.24, 0.76),
+    // ⏩ fast-forward — two right triangles (the Seek toggle)
+    np_seek: (x, y) => triRight(x, y, 0.12, 0.54) || triRight(x, y, 0.50, 0.92),
     // 🎧 headphones — top band arc + two ear pads
     np_dj: (x, y) =>
         (ring(x, y, 0.5, 0.56, 0.26, 0.36) && y < f(0.56)) ||

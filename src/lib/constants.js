@@ -1,5 +1,9 @@
 export const COLORS = {
     PRIMARY: 0x5865f2,
+    // The panel's theme — matched to the bot's icy skull avatar. Used by the
+    // Now Playing container accent and the progress bar fill together, so the
+    // look changes in one place.
+    ICE: 0x6bd5ff,
     SPOTIFY: 0x1db954,
 };
 

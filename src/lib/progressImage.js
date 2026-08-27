@@ -15,7 +15,7 @@ const KNOB_R = 17;
 const PAD = KNOB_R + 2; // the knob must not clip at 0% / 100%
 
 const TRACK = [0x4e, 0x50, 0x58]; // Discord's muted grey
-const FILL = [0x58, 0x65, 0xf2]; // COLORS.PRIMARY blurple
+const FILL = [0x6b, 0xd5, 0xff]; // COLORS.ICE — the avatar's ice blue
 const KNOB = [0xff, 0xff, 0xff];
 
 // Capsule: distance from the horizontal segment's centerline.

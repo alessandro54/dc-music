@@ -120,7 +120,7 @@ function timeLine(queue, song) {
 
 // Buttons carry application emojis (flat white glyphs, see appEmojiService)
 // with the unicode set as fallback for a fresh application.
-export function nowPlayingControls(queue) {
+export function nowPlayingControls(queue, { seekOpen = false, canSeek = false } = {}) {
     const isPaused = queue.player.state.status === AudioPlayerStatus.Paused;
     return new ActionRowBuilder().addComponents(
         // Disabled rather than hidden when there's nothing to go back to: a row
@@ -136,6 +136,12 @@ export function nowPlayingControls(queue) {
             .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("np:skip").setEmoji(appEmoji("np_skip", "⏭️")).setLabel("Skip")
             .setStyle(ButtonStyle.Secondary),
+        // The digit rows fold in and out behind this — Primary while open, so
+        // the button itself shows the state. Disabled until the duration is
+        // known, since the digits are fractions of it.
+        new ButtonBuilder().setCustomId("np:seektoggle").setEmoji(appEmoji("np_seek", "⏩"))
+            .setLabel("Seek").setStyle(seekOpen ? ButtonStyle.Primary : ButtonStyle.Secondary)
+            .setDisabled(!canSeek),
         new ButtonBuilder().setCustomId("np:stop").setEmoji(appEmoji("np_stop", "⏹️")).setLabel("Stop")
             .setStyle(ButtonStyle.Danger),
     );
@@ -165,7 +171,7 @@ function seekRows() {
 // controls. Returns the payload halves — the bar rides as an attachment the
 // container's media gallery references, so the caller must send `files` with
 // the components (nowPlayingService is the one consumer).
-export function nowPlayingPanel(queue) {
+export function nowPlayingPanel(queue, { seekOpen = false } = {}) {
     const song = queue.current;
     const container = shell(`${appEmojiText("np_note", "🎵")} Now Playing`, song, creditLines(queue, song));
     container.addTextDisplayComponents(statLine(queue, song));
@@ -181,11 +187,13 @@ export function nowPlayingPanel(queue) {
         );
     }
     container.addTextDisplayComponents(timeLine(queue, song));
-    if (totalMs) {
+    // The digit rows live behind the Seek toggle — panel UI state, owned by
+    // nowPlayingService, threaded through per render.
+    if (totalMs && seekOpen) {
         container.addTextDisplayComponents(new TextDisplayBuilder().setContent("-# Seek to"));
         container.addActionRowComponents(...seekRows());
     }
-    container.addActionRowComponents(nowPlayingControls(queue));
+    container.addActionRowComponents(nowPlayingControls(queue, { seekOpen, canSeek: Boolean(totalMs) }));
     return { components: [container], files };
 }
 
@@ -204,7 +212,7 @@ export function queuedView(song, position, queue, { next = false } = {}) {
 // resolved here rather than by passing one value around.
 function shell(title, song, lines) {
     const container = new ContainerBuilder()
-        .setAccentColor(COLORS.PRIMARY)
+        .setAccentColor(COLORS.ICE)
         .addTextDisplayComponents(heading(title))
         .addSeparatorComponents(rule());
     const block = titleSection(song, lines);

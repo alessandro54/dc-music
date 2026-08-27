@@ -1,4 +1,5 @@
 import { ephemeral } from "@/discord/reply.js";
+import { toggleSeekRows } from "@/discord/services/nowPlayingService.js";
 import { queues } from "@/discord/services/playbackService.js";
 import { durationToMs } from "@/lib/utils.js";
 
@@ -29,6 +30,14 @@ export async function handleNowPlayingButton(interaction) {
     const botChannelId = interaction.guild.members.me?.voice?.channelId;
     if (botChannelId && interaction.member?.voice?.channelId !== botChannelId) {
         return interaction.reply(ephemeral("Join the voice channel to control playback."));
+    }
+
+    // The Seek toggle folds the digit rows in and out — panel state, so the
+    // redraw is the toggle's own; no queue change is involved.
+    if (interaction.customId === "np:seektoggle") {
+        await interaction.deferUpdate();
+        await toggleSeekRows(queue);
+        return;
     }
 
     // The digit hotkeys — YouTube's 0–9, jump to that tenth of the track. The
