@@ -1,4 +1,4 @@
-import { componentPayload, nowPlayingView } from "@/discord/views/nowPlaying.js";
+import { componentPayload, nowPlayingPanel } from "@/discord/views/nowPlaying.js";
 import { TIMEOUTS } from "@/lib/constants.js";
 import { log } from "@/lib/logger.js";
 
@@ -72,9 +72,18 @@ async function _refresh(queue, panel) {
     }
     startTicker(queue, panel);
 
-    const payload = componentPayload(nowPlayingView(queue));
+    const { components, files } = nowPlayingPanel(queue);
+    const payload = componentPayload(components);
+    // The bar image regenerates per render; `attachments: []` drops the
+    // previous upload on edit so they don't accumulate on the message.
+    if (files.length) {
+        payload.files = files;
+        payload.attachments = [];
+    }
     // Every tick would otherwise be an edit even while paused, where nothing has
-    // changed. Comparing the rendered body first keeps a paused panel free.
+    // changed. Comparing the rendered body first keeps a paused panel free —
+    // the bar rides on the elapsed chip: any visible progress changes the chip
+    // text, an unchanged chip means an unchanged bar.
     const body = JSON.stringify(payload.components.map((c) => c.toJSON()));
     if (!panel.stale && body === panel.lastBody) return;
 

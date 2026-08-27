@@ -1,21 +1,24 @@
 import { AudioPlayerStatus } from "@discordjs/voice";
 import {
     ActionRowBuilder,
+    AttachmentBuilder,
     ButtonBuilder,
     ButtonStyle,
     ContainerBuilder,
+    MediaGalleryBuilder,
+    MediaGalleryItemBuilder,
     MessageFlags,
     SectionBuilder,
     SeparatorBuilder,
     SeparatorSpacingSize,
-    StringSelectMenuBuilder,
     TextDisplayBuilder,
     ThumbnailBuilder,
 } from "discord.js";
 
 import { appEmoji, appEmojiText } from "@/discord/services/appEmojiService.js";
 import { COLORS } from "@/lib/constants.js";
-import { durationToMs, formatMs, progressBar } from "@/lib/utils.js";
+import { renderProgressBar } from "@/lib/progressImage.js";
+import { durationToMs, formatMs } from "@/lib/utils.js";
 
 // The Now Playing "dashboard": a Components V2 container, not an embed. The
 // accent bar down the left, the rule under the heading and the album art sitting
@@ -68,14 +71,13 @@ function titleSection(song, lines) {
 // "Added by" reads as a mention chip rather than a plain tag, and the voice
 // channel as `<#id>` — Discord renders that with the speaker icon itself, so the
 // view never has to look a channel name up.
-const DJ_MEDALS = ["🥇", "🥈", "🥉"];
-
 function creditLines(queue, song) {
     const who = song.requestedById ? `<@${song.requestedById}>` : song.requestedBy;
     // The requester's standing on /leaderboard's DJ board, stamped on the song
     // by the queue (GuildQueue._absorbLookups). Absent until it resolves — and
-    // absent for a first-ever pick, which has no rank to show yet.
-    const badge = song.djRank ? ` · ${DJ_MEDALS[song.djRank - 1] ?? "🎧"} DJ #${song.djRank}` : "";
+    // absent for a first-ever pick, which has no rank to show yet. The glyph is
+    // the same white set as the buttons; the rank number carries the standing.
+    const badge = song.djRank ? ` · ${appEmojiText("np_dj", "🎧")} DJ #${song.djRank}` : "";
     const lines = [`- Added by ${who}${badge}`];
     const channelId = queue?.connection?.joinConfig?.channelId;
     if (channelId) lines.push(`- <#${channelId}>`);
@@ -95,13 +97,23 @@ function statLine(queue, song) {
 }
 
 // Elapsed is the resource's own playback clock plus whatever a seek skipped.
-// `duration` is null for the first seconds of a URL play (the sidecar has not
-// answered yet), so the bar has to degrade to a bare elapsed counter.
-function progressLine(queue, song) {
-    const elapsedMs = (queue.resource?.playbackDuration ?? 0) + queue.seekOffset * 1000;
-    const totalMs = durationToMs(song.duration);
-    const content = totalMs
-        ? `\`${progressBar(elapsedMs, totalMs)}\`\n\`${formatMs(elapsedMs)}\` / \`${song.duration}\``
+const elapsedMsOf = (queue) => (queue.resource?.playbackDuration ?? 0) + queue.seekOffset * 1000;
+
+// The bar is an image: a text bar's rendered width depends on the viewer's
+// window and font, while a media-gallery image stretches to the container on
+// every client — the only way "fill the panel" can actually be promised.
+const BAR_FILE = "progress.png";
+
+function progressGallery() {
+    return new MediaGalleryBuilder().addItems(
+        new MediaGalleryItemBuilder().setURL(`attachment://${BAR_FILE}`).setDescription("Progress"),
+    );
+}
+
+function timeLine(queue, song) {
+    const elapsedMs = elapsedMsOf(queue);
+    const content = song.duration
+        ? `\`${formatMs(elapsedMs)}\` / \`${song.duration}\``
         : `\`${formatMs(elapsedMs)}\` elapsed`;
     return new TextDisplayBuilder().setContent(content);
 }
@@ -129,45 +141,52 @@ export function nowPlayingControls(queue) {
     );
 }
 
-// Discord has no slider, so "click the bar at a position" is a select menu:
-// the track sliced into even steps, each option a timestamp. One click = a
-// real seek. Only rendered once the duration is known — percentages of an
-// unknown length would be an empty menu — and it deliberately re-renders with
-// the panel, so a duration that arrives late grows the control in place.
-const SEEK_STEPS = 10;
+// Discord has no slider, so seeking is YouTube's number-row instead: 0–9 jump
+// to that tenth of the track, exactly like the player hotkeys. Two rows of
+// five buttons, each wearing a seven-segment digit glyph from the same white
+// set as the controls. The value is the *fraction*, resolved against the
+// duration at press time — a duration that arrives late doesn't strand the
+// buttons with stale seconds.
+const SEEK_DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
-function seekRow(song, totalMs) {
-    const totalSecs = Math.floor(totalMs / 1000);
-    const step = totalSecs / SEEK_STEPS;
-    const options = Array.from({ length: SEEK_STEPS }, (_, i) => {
-        const at = Math.floor(i * step);
-        return {
-            label: `${fmtBar(i, SEEK_STEPS)} ${formatMs(at * 1000)}`,
-            description: i === 0 ? "Restart" : `${i * (100 / SEEK_STEPS)}% of ${song.duration}`,
-            value: String(at),
-        };
-    });
-    return new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-            .setCustomId("np:seek")
-            .setPlaceholder("⏩ Seek to…")
-            .addOptions(options),
-    );
+function seekRows() {
+    const button = (d) =>
+        new ButtonBuilder()
+            .setCustomId(`np:seekpct:${d}`)
+            .setEmoji(appEmoji(`np_d${d}`, `${d}\uFE0F\u20E3`))
+            .setStyle(ButtonStyle.Secondary);
+    return [
+        new ActionRowBuilder().addComponents(SEEK_DIGITS.slice(0, 5).map(button)),
+        new ActionRowBuilder().addComponents(SEEK_DIGITS.slice(5).map(button)),
+    ];
 }
 
-// A miniature of the progress bar inside each option label, so the menu reads
-// as the bar it stands in for.
-const fmtBar = (i, steps) => "─".repeat(i) + "●" + "─".repeat(steps - 1 - i);
-
-// The full dashboard: heading, art + credits, stats, progress, controls.
-export function nowPlayingView(queue) {
+// The full dashboard: heading, art + credits, stats, bar image, times, seek,
+// controls. Returns the payload halves — the bar rides as an attachment the
+// container's media gallery references, so the caller must send `files` with
+// the components (nowPlayingService is the one consumer).
+export function nowPlayingPanel(queue) {
     const song = queue.current;
     const container = shell(`${appEmojiText("np_note", "🎵")} Now Playing`, song, creditLines(queue, song));
-    container.addTextDisplayComponents(statLine(queue, song), progressLine(queue, song));
+    container.addTextDisplayComponents(statLine(queue, song));
+
     const totalMs = durationToMs(song.duration);
-    if (totalMs) container.addActionRowComponents(seekRow(song, totalMs));
+    const files = [];
+    if (totalMs) {
+        container.addMediaGalleryComponents(progressGallery());
+        files.push(
+            new AttachmentBuilder(renderProgressBar(elapsedMsOf(queue) / totalMs), {
+                name: BAR_FILE,
+            }),
+        );
+    }
+    container.addTextDisplayComponents(timeLine(queue, song));
+    if (totalMs) {
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent("-# Seek to"));
+        container.addActionRowComponents(...seekRows());
+    }
     container.addActionRowComponents(nowPlayingControls(queue));
-    return [container];
+    return { components: [container], files };
 }
 
 // Same container, no progress bar or controls — the track isn't playing yet, so

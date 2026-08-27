@@ -1,5 +1,6 @@
 import { ephemeral } from "@/discord/reply.js";
 import { queues } from "@/discord/services/playbackService.js";
+import { durationToMs } from "@/lib/utils.js";
 
 // Component routes, the counterpart to router.js for buttons. A custom id is
 // `np:<action>`; the action names a function here. Keeping the table here rather
@@ -30,14 +31,18 @@ export async function handleNowPlayingButton(interaction) {
         return interaction.reply(ephemeral("Join the voice channel to control playback."));
     }
 
-    // The seek select — the panel's clickable progress bar. Acknowledged first
-    // for the same reason as the buttons below; the seek itself re-extracts
-    // (~3.5s), during which the panel already shows the target position because
-    // progressLine reads seekOffset the moment it is set.
-    if (interaction.isStringSelectMenu()) {
+    // The digit hotkeys — YouTube's 0–9, jump to that tenth of the track. The
+    // fraction resolves against the duration at press time; a track whose
+    // duration hasn't arrived yet can't be seeked into. Acknowledged first for
+    // the same reason as the buttons below; the seek re-extracts (~3.5s),
+    // during which the panel already shows the target position because the
+    // time line reads seekOffset the moment it is set.
+    if (interaction.customId.startsWith("np:seekpct:")) {
+        const totalMs = durationToMs(queue.current?.duration);
+        if (!totalMs) return interaction.reply(ephemeral("Can't seek yet — length unknown."));
         await interaction.deferUpdate();
-        const seconds = Number(interaction.values[0]);
-        if (Number.isFinite(seconds)) void queue.seek(seconds);
+        const tenth = Number(interaction.customId.slice("np:seekpct:".length));
+        void queue.seek(Math.floor((tenth / 10) * (totalMs / 1000)));
         return;
     }
 

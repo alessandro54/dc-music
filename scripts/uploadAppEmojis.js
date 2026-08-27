@@ -25,6 +25,10 @@ const GLYPHS = {
     np_skip: (x, y) => triRight(x, y, 0.14, 0.66) || (bar(x, 0.74, 0.84) && v(y)),
     // ⏹ square
     np_stop: (x, y) => bar(x, 0.24, 0.76) && bar(y, 0.24, 0.76),
+    // 🎧 headphones — top band arc + two ear pads
+    np_dj: (x, y) =>
+        (ring(x, y, 0.5, 0.56, 0.26, 0.36) && y < f(0.56)) ||
+        disc(x, y, 0.19, 0.62, 0.115) || disc(x, y, 0.81, 0.62, 0.115),
     // 🎵 beamed eighth notes — two heads, two stems, a slanted beam
     np_note: (x, y) =>
         disc(x, y, 0.30, 0.74, 0.115) || disc(x, y, 0.68, 0.66, 0.115) ||
@@ -34,6 +38,10 @@ const GLYPHS = {
 };
 
 const disc = (x, y, cx, cy, r) => (x - f(cx)) ** 2 + (y - f(cy)) ** 2 <= f(r) ** 2;
+const ring = (x, y, cx, cy, r1, r2) => {
+    const d = (x - f(cx)) ** 2 + (y - f(cy)) ** 2;
+    return d >= f(r1) ** 2 && d <= f(r2) ** 2;
+};
 // The beam's top edge, sloping up left→right like a real beam.
 const slant = (x) => f(0.30) - (x - f(0.365)) * 0.18;
 
@@ -68,6 +76,22 @@ function render(paint) {
         }
     }
     return PNG.sync.write(png);
+}
+
+// Seven-segment digits 0-9 for the seek hotkeys — same flat white as the rest.
+const SEGS = {
+    A: (x, y) => bar(x, 0.28, 0.72) && bar(y, 0.10, 0.20),
+    B: (x, y) => bar(x, 0.66, 0.78) && bar(y, 0.14, 0.52),
+    C: (x, y) => bar(x, 0.66, 0.78) && bar(y, 0.48, 0.86),
+    D: (x, y) => bar(x, 0.28, 0.72) && bar(y, 0.80, 0.90),
+    E: (x, y) => bar(x, 0.22, 0.34) && bar(y, 0.48, 0.86),
+    F: (x, y) => bar(x, 0.22, 0.34) && bar(y, 0.14, 0.52),
+    G: (x, y) => bar(x, 0.28, 0.72) && bar(y, 0.45, 0.55),
+};
+const DIGIT_SEGS = ["ABCDEF", "BC", "ABGED", "ABGCD", "FGBC", "AFGCD", "AFGEDC", "ABC", "ABCDEFG", "ABCDFG"];
+for (let d = 0; d <= 9; d++) {
+    const segs = DIGIT_SEGS[d].split("").map((k) => SEGS[k]);
+    GLYPHS[`np_d${d}`] = (x, y) => segs.some((seg) => seg(x, y));
 }
 
 const token = Deno.env.get("BOT_TOKEN");
