@@ -34,6 +34,8 @@ export const TIMEOUTS = {
     POKEMON_SPAWN_MS: 600_000, // a wild pokémon appears every 10 minutes
     POKEAPI_MS: 4_000, // fetch has no default timeout; Discord expires the token at 15min
     RADIO_SEED_MS: 4_000, // per-seed automix budget; measured 740-950ms, so this is a hang guard
+    PREFETCH_LEAD_MS: 25_000, // start extracting the next track this far before the current one ends
+    PREFETCH_CHECK_MS: 5_000, // how often a playing queue looks at the clock for that
 };
 
 export const POLL_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"];

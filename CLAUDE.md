@@ -278,7 +278,7 @@ DB is **Turso** (remote) — no volume. See `docs/DEPLOY.md` for the full setup,
 ## VM & Memory
 - VM: Oracle Cloud Ampere (arm64), **12GB RAM** — no memory pressure. The old 512MB Fly heap cap (`--max-old-space-size=160`) has been removed from the Dockerfile CMD.
 - **Process hygiene still matters.** Each play spawns yt-dlp (now pip, a python child). `GuildQueue._killStream` → `destroyResource` (`services/streamService.js`) reaps it via the shared `reap()`: stops the duration poller, closes the output stream (EOF), SIGTERM, awaits `.status`, SIGKILL fallback after 2s. Don't regress — leaked procs are sloppy even with headroom.
-- Playback is sequential — only one yt-dlp alive at a time. **This is a performance constraint, not just tidiness:** 2 cores means a second concurrent extraction directly delays the audio the user is waiting on (measured: 6.9s). Anything that spawns yt-dlp off the critical path must stay clear of the streaming spawn.
+- Playback is sequential — one yt-dlp *extraction* at a time. **This is a performance constraint, not just tidiness:** 2 cores means a second concurrent extraction directly delays the audio the user is waiting on (measured: 6.9s). Anything that spawns yt-dlp off the critical path must stay clear of the streaming spawn. **The next-track prefetch (`GuildQueue._maybePrefetch`) is the deliberate exception**: it extracts songs[1] ~25s before the current track ends, overlapping a live process that finished extracting long ago and is just trickling bytes through a backpressured pipe at ~zero CPU — extraction-beside-idle-pipe, not extraction-beside-extraction. That is what makes the gap between songs a player state flip instead of a ~7s cold extraction. The held resource is reaped on reorder (identity check in `_takePrefetch`), on `/previous`, and on destroy.
 
 ## Audio Pipeline (`src/discord/services/`)
 
@@ -317,7 +317,7 @@ they share (`extractVideoId`, `isYouTubeUrl`, `ytThumb`, `trackKey`, `fmtSecs`).
 - YouTube access on this IP needs **all three**: cookies (past `LOGIN_REQUIRED`) + PO token (GVS) + EJS (signature/nsig). Missing any → no audio. See `docs/DEPLOY.md`.
 - **EJS comes from the image, not from GitHub.** The Dockerfile installs `yt-dlp[default]`, whose dependency group pins `yt-dlp-ejs` to the exact version yt-dlp requires (bare `pip install yt-dlp` declares *no* dependencies at all). `--remote-components ejs:github` is the alternative to that package, not a companion — measured with the package installed, the flag still fetched from GitHub: **9.08s cold vs 2.06s** using the local copy. The container has no volume, so every deploy is a cold cache, and a GitHub outage would have meant no audio. Don't re-add the flag.
 - `/data/ytdlp-cache` is a **Dokku bind-mount** (`dokku storage:mount music-bot /var/lib/dokku/data/storage/music-bot-ytdlp-cache:/data/ytdlp-cache`) so yt-dlp's player/sigfunc cache survives deploys. Without it every release started cold.
-- Playback is sequential — only one yt-dlp alive at a time. Albums/playlists are a metadata queue (`GuildQueue.songs`); Spotify tracks resolve to YouTube lazily in `_playNext`.
+- Playback is sequential — one extraction at a time, except the next-track prefetch (see VM & Memory). Albums/playlists are a metadata queue (`GuildQueue.songs`); Spotify tracks resolve to YouTube lazily in `_playNext`.
 
 ## Leaving & Going Back (`guildQueue.js`, `events/voiceStateUpdate.js`)
 
