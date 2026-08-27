@@ -8,9 +8,11 @@ import { captureError, userFrom } from "@/lib/sentry.js";
 export default {
     name: "interactionCreate",
     async execute(interaction, client) {
-        if (interaction.isButton()) {
+        if (interaction.isButton() || interaction.isStringSelectMenu()) {
             if (interaction.customId.startsWith(NP_PREFIX)) return handleNowPlayingButton(interaction);
-            if (interaction.customId.startsWith(PK_PREFIX)) return handleCatchButton(interaction);
+            if (interaction.isButton() && interaction.customId.startsWith(PK_PREFIX)) {
+                return handleCatchButton(interaction);
+            }
             return;
         }
 

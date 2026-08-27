@@ -8,10 +8,12 @@ import {
     SectionBuilder,
     SeparatorBuilder,
     SeparatorSpacingSize,
+    StringSelectMenuBuilder,
     TextDisplayBuilder,
     ThumbnailBuilder,
 } from "discord.js";
 
+import { appEmoji } from "@/discord/services/appEmojiService.js";
 import { COLORS } from "@/lib/constants.js";
 import { durationToMs, formatMs, progressBar } from "@/lib/utils.js";
 
@@ -98,30 +100,66 @@ function progressLine(queue, song) {
     return new TextDisplayBuilder().setContent(content);
 }
 
+// Buttons carry application emojis (flat white glyphs, see appEmojiService)
+// with the unicode set as fallback for a fresh application.
 export function nowPlayingControls(queue) {
     const isPaused = queue.player.state.status === AudioPlayerStatus.Paused;
     return new ActionRowBuilder().addComponents(
         // Disabled rather than hidden when there's nothing to go back to: a row
         // that changes width between renders is worse than a dead button.
-        new ButtonBuilder().setCustomId("np:previous").setEmoji("⏮️").setLabel("Previous")
-            .setStyle(ButtonStyle.Secondary).setDisabled(queue.played.length === 0),
-        // Toggles: the button renders ▶️ Resume once paused, so a press while
+        new ButtonBuilder().setCustomId("np:previous").setEmoji(appEmoji("np_previous", "⏮️"))
+            .setLabel("Previous").setStyle(ButtonStyle.Secondary)
+            .setDisabled(queue.played.length === 0),
+        // Toggles: the button renders ▶ Resume once paused, so a press while
         // paused means resume (see buttons.js).
         new ButtonBuilder().setCustomId("np:pause")
-            .setEmoji(isPaused ? "▶️" : "⏸️").setLabel(isPaused ? "Resume" : "Pause")
+            .setEmoji(isPaused ? appEmoji("np_play", "▶️") : appEmoji("np_pause", "⏸️"))
+            .setLabel(isPaused ? "Resume" : "Pause")
             .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("np:skip").setEmoji("⏭️").setLabel("Skip")
+        new ButtonBuilder().setCustomId("np:skip").setEmoji(appEmoji("np_skip", "⏭️")).setLabel("Skip")
             .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("np:stop").setEmoji("⏹️").setLabel("Stop")
+        new ButtonBuilder().setCustomId("np:stop").setEmoji(appEmoji("np_stop", "⏹️")).setLabel("Stop")
             .setStyle(ButtonStyle.Danger),
     );
 }
+
+// Discord has no slider, so "click the bar at a position" is a select menu:
+// the track sliced into even steps, each option a timestamp. One click = a
+// real seek. Only rendered once the duration is known — percentages of an
+// unknown length would be an empty menu — and it deliberately re-renders with
+// the panel, so a duration that arrives late grows the control in place.
+const SEEK_STEPS = 10;
+
+function seekRow(song, totalMs) {
+    const totalSecs = Math.floor(totalMs / 1000);
+    const step = totalSecs / SEEK_STEPS;
+    const options = Array.from({ length: SEEK_STEPS }, (_, i) => {
+        const at = Math.floor(i * step);
+        return {
+            label: `${fmtBar(i, SEEK_STEPS)} ${formatMs(at * 1000)}`,
+            description: i === 0 ? "Restart" : `${i * (100 / SEEK_STEPS)}% of ${song.duration}`,
+            value: String(at),
+        };
+    });
+    return new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+            .setCustomId("np:seek")
+            .setPlaceholder("⏩ Seek to…")
+            .addOptions(options),
+    );
+}
+
+// A miniature of the progress bar inside each option label, so the menu reads
+// as the bar it stands in for.
+const fmtBar = (i, steps) => "─".repeat(i) + "●" + "─".repeat(steps - 1 - i);
 
 // The full dashboard: heading, art + credits, stats, progress, controls.
 export function nowPlayingView(queue) {
     const song = queue.current;
     const container = shell("🎵 Now Playing", song, creditLines(queue, song));
     container.addTextDisplayComponents(statLine(queue, song), progressLine(queue, song));
+    const totalMs = durationToMs(song.duration);
+    if (totalMs) container.addActionRowComponents(seekRow(song, totalMs));
     container.addActionRowComponents(nowPlayingControls(queue));
     return [container];
 }

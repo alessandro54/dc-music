@@ -30,6 +30,17 @@ export async function handleNowPlayingButton(interaction) {
         return interaction.reply(ephemeral("Join the voice channel to control playback."));
     }
 
+    // The seek select — the panel's clickable progress bar. Acknowledged first
+    // for the same reason as the buttons below; the seek itself re-extracts
+    // (~3.5s), during which the panel already shows the target position because
+    // progressLine reads seekOffset the moment it is set.
+    if (interaction.isStringSelectMenu()) {
+        await interaction.deferUpdate();
+        const seconds = Number(interaction.values[0]);
+        if (Number.isFinite(seconds)) void queue.seek(seconds);
+        return;
+    }
+
     const action = ACTIONS[interaction.customId.slice(NP_PREFIX.length)];
     if (!action) return interaction.deferUpdate();
 
