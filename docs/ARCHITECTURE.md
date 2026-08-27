@@ -20,7 +20,6 @@ flowchart LR
         subgraph net["docker network: ytpot"]
             BOT["<b>music-bot</b><br/>Deno · discord.js<br/>spawns yt-dlp"]
             POT["<b>bgutil-provider</b><br/>PO-token minting<br/>:4416"]
-            WARP["<b>warp</b><br/>Cloudflare WARP<br/>SOCKS5 :1080"]
         end
         VOL[("/data/ytdlp-cache<br/>bind mount")]
     end
@@ -30,41 +29,43 @@ flowchart LR
 
     D <-->|"gateway + REST"| BOT
     BOT -->|"HTTP: get_pot"| POT
-    BOT -->|"yt-dlp --proxy"| WARP
     BOT --- VOL
     BOT -->|"metadata: oEmbed / Innertube"| YT
     BOT <-->|"history, /play cache"| TURSO
-    WARP -->|"clean egress IP"| YT
     POT -->|"BotGuard attestation"| YT
 
     classDef side fill:#1f6feb22,stroke:#1f6feb
-    class POT,WARP side
+    class POT side
 ```
 
-**Only yt-dlp traffic goes through WARP.** Discord, Turso, oEmbed and Innertube
-all egress directly — the proxy is passed as a yt-dlp flag, not a system route.
+## Why the sidecar exists — and where the proxy went
 
-## Why each sidecar exists
-
-Measured on the prod host, 12 videos, time to first audio byte:
+The historical numbers, measured on the prod host (12 videos, time to first
+audio byte), when Cloudflare WARP still provided a clean egress:
 
 | config | time | works |
 | --- | --- | --- |
 | direct + cookies + PO token | 7.4–8.3s | yes |
 | direct, no cookies | 1.2–1.6s | **1 of 4** |
-| WARP, no cookies, no PO token | 1.7–1.9s | **3 of 4** |
-| **WARP + PO token, no cookies** | **1.6–2.2s** | **12 of 12** |
+| clean proxy, no cookies, no PO token | 1.7–1.9s | **3 of 4** |
+| **clean proxy + PO token, no cookies** | **1.6–2.2s** | **12 of 12** |
 
-Two independent findings:
+Two findings that still hold:
 
-- **Cookies are what cost ~6s.** An authenticated session makes YouTube demand
-  the full player-JS + nsig chain on every play. They are not slow *because* of
-  the datacenter IP — the same cookies are slow through WARP too.
-- **The PO token is what makes the no-cookie path reliable**, and it costs 13ms.
-  Without it, most videos return no audio.
+- **Cookies are what cost time.** An authenticated session makes YouTube demand
+  the full player-JS + nsig chain (and, for a free account, a pre-roll ad wait —
+  see the `use_ad_playback_context` notes in CLAUDE.md, which cut the cookied
+  path to ~3.5s). They are not slow *because* of the datacenter IP.
+- **The PO token is what makes a cookie-free path reliable**, and it costs 13ms.
 
-So `warp` buys speed (it makes dropping cookies possible) and `bgutil` buys
-reliability. Neither substitutes for the other.
+**WARP itself is gone (2026-08-27).** YouTube now flags the whole WARP pool:
+login gates, then CDN 403s on unauthenticated downloads, across three exits in
+two /48s — rotation inside the pool cannot escape a class-level flag. The
+`YTDLP_PROXY` knob stays in code for any future clean egress (a residential IP
+was verified to serve cookie-free audio with *no PO token at all*; a static ISP
+proxy is the realistic always-up candidate). `bgutil` stays: it refreshes the
+authenticated session (cookie longevity) and is what would make a restored
+fast path 12/12 instead of 3/4.
 
 ### What a cold play actually spends
 
@@ -138,8 +139,8 @@ flowchart TD
     B -->|no| D[direct]
     B -->|yes| C{proxy healthy?}
     C -->|no, in cooldown| D
-    C -->|yes| E[via WARP]
-    E -->|fails| F[mark bad · 5 min cooldown] --> D
+    C -->|yes| E[via proxy, cookie-free]
+    E -->|3 misses in a row, or a transport fault| F[5 min cooldown] --> D
     D --> G{audio?}
     G -->|yes| H([playing])
     G -->|no| I[stall watchdog skips the track]
@@ -150,40 +151,24 @@ flowchart TD
 
 | if this breaks | symptom | what happens |
 | --- | --- | --- |
-| `warp` | slower plays | falls back to direct + cookies after one failure, retries the proxy in 5 min |
-| `bgutil` | some videos fail | cookies still carry the authenticated path |
-| both | back to ~7.5s | works, just slow — this is the pre-sidecar baseline |
-| cookies expire | "Sign in to confirm" | only matters when the proxy is down; re-export per DEPLOY.md |
+| `bgutil` | little, day to day | the streaming path is cookied; the provider mainly extends cookie life |
+| a future `YTDLP_PROXY` | slower plays | transport-fault detection + a 3-miss strike counter demote it; plays fall back to direct + cookies |
+| cookies expire | "Sign in to confirm" | re-export per DEPLOY.md — cookies carry the whole streaming path now |
 
-Keeping `YOUTUBE_COOKIES` set is what makes the fallback meaningful, even once
-the proxy path stops needing it day to day.
-
-**Cookies are deliberately omitted while the proxy is healthy.** Sending them
-through the proxy is just as slow as sending them direct, so leaving them on
-would make `YTDLP_PROXY` pointless. They return the instant anything falls back.
-
-**The cookie-free path is ~75% reliable on videos yt-dlp has not seen before**
-(6 of 8 fresh videos; an earlier 18-of-19 figure was measured by re-testing the
-same videos, which warms yt-dlp's cache and flattered it). So it is used only
-where a miss is cheap:
-
-| call | cookies | why |
-| --- | --- | --- |
-| streaming spawn | tried without first | a miss is caught in <1s by the first-byte check, then retried with cookies |
-| metadata / playlist | omitted when proxied | `runYtdlp` retries direct with cookies immediately |
-
-The practical effect: a cold play is ~2s when the fast path lands and ~8s
-when it falls back. A stalled stream still
-forces the direct path and replays the track once before skipping it.
+**Cookie-free logic is dormant, not deleted.** `createStream` still tries the
+cookie-free proxied path first whenever `YTDLP_PROXY` points somewhere healthy;
+with the var unset every play goes straight to the direct cookied path (~3.5s
+cold with the `web_music` + ad-context pin, no doomed attempt in front). The
+first-byte check that made the speculative attempt affordable is unchanged.
 
 ## Known sharp edges
 
-- **PO tokens are minted from the host IP while media is fetched through WARP.**
-  Two different IPs. It works today; if YouTube ever binds tokens to the
-  requesting IP, this breaks and `bgutil` would need routing through WARP too.
-- **Free WARP is unproven at sustained load.** The measurements above span
-  minutes, not days. Cloudflare egress IPs are shared, so YouTube's tolerance
-  may drift.
+- **PO tokens are minted from the host IP.** With a future proxy, media would
+  fetch from a different IP than the token was minted from. It worked under
+  WARP; if YouTube ever binds tokens to the requesting IP, `bgutil` would need
+  routing through the proxy too. (googlevideo media URLs are already IP-bound —
+  extraction and download must egress the same IP, which is why only *sticky*
+  proxies are viable, never per-request rotation.)
 - **`/data/ytdlp-cache` must be a real volume.** Without one it is wiped every
   deploy and the player/signature caches start cold each release.
 - **Playback is sequential by design.** Two concurrent yt-dlp processes on 2

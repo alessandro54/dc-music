@@ -18,8 +18,6 @@ services:
     container_name: music-bot
     restart: unless-stopped
     depends_on:
-      warp:
-        condition: service_healthy
       bgutil:
         condition: service_started
     environment:
@@ -42,10 +40,15 @@ services:
       # Sidecars. Both are optional — unset either one and yt-dlp simply does
       # without it, more slowly or less reliably. See docs/ARCHITECTURE.md.
       YTDLP_POT_BASE_URL: http://bgutil:4416
-      YTDLP_PROXY: socks5://warp:1080
+      # YTDLP_PROXY is supported but deliberately unset: it exists for a CLEAN
+      # egress (e.g. a static ISP proxy), which would let cookies be dropped on
+      # the fast path. Cloudflare WARP used to fill this slot and is gone —
+      # YouTube flags its whole pool now (verified 2026-08-27: login gates and
+      # CDN 403s across three exits), so it bought ~8s of doomed attempt per
+      # cold play and nothing else.
+      # YTDLP_PROXY: ${YTDLP_PROXY:-}
 
-      # Fallback for when the proxy is unavailable: cookies still work, they
-      # are just ~6s slower per cold play. Netscape format, full file contents.
+      # Netscape format, full file contents. Required on a datacenter IP.
       YOUTUBE_COOKIES: ${YOUTUBE_COOKIES:-}
 
       SENTRY_DSN: ${SENTRY_DSN:-}
@@ -62,37 +65,8 @@ services:
     container_name: bgutil-provider
     restart: unless-stopped
 
-  # Cloudflare WARP as a SOCKS5 proxy, so yt-dlp egresses from a clean IP.
-  # This is what lets cookies be dropped, which is the ~6s saving — the cookies
-  # are the cost, not the IP itself.
-  #
-  # NET_ADMIN and the /dev/net/tun rule are required: WARP builds a WireGuard
-  # tunnel. The proxy is never published to the host.
-  warp:
-    image: caomingjun/warp:latest
-    container_name: warp
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-    device_cgroup_rules:
-      - "c 10:200 rwm"
-    sysctls:
-      net.ipv6.conf.all.disable_ipv6: 0
-      net.ipv4.conf.all.src_valid_mark: 1
-    volumes:
-      - warp-data:/var/lib/cloudflare-warp
-    healthcheck:
-      # Registration takes a few seconds; the bot waits for warp=on rather than
-      # racing it and falling back to the slow path on every restart.
-      test: ["CMD-SHELL", "curl -fsS --max-time 5 --socks5-hostname 127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace | grep -q 'warp=on'"]
-      interval: 10s
-      timeout: 8s
-      retries: 12
-      start_period: 20s
-
 volumes:
   ytdlp-cache:
-  warp-data:
 
-# All three share compose's default network, so `bgutil` and `warp` resolve by
-# service name. On Dokku the equivalent is the `ytpot` network — see DEPLOY.md.
+# Both share compose's default network, so `bgutil` resolves by service name.
+# On Dokku the equivalent is the `ytpot` network — see DEPLOY.md.

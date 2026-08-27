@@ -53,6 +53,8 @@ SPOTIFY_CLIENT_SECRET=
 SPOTIFY_REFRESH_TOKEN=       # user-authorized token for playlist reads — `deno task spotify-auth` to generate
 YTDLP_POT_BASE_URL=          # http://bgutil-provider:4416 — PO-token provider sidecar
 # YTDLP_PLAYER_CLIENTS=      # optional — override the streaming player_client pin without a deploy
+# YTDLP_PROXY=               # optional — sticky CLEAN egress only (e.g. static ISP proxy). WARP is
+                             # gone: YouTube class-flags its pool (2026-08-27, 3 exits tested)
 YOUTUBE_COOKIES=             # Netscape cookies — REQUIRED on this datacenter IP (LOGIN_REQUIRED)
 OWNER_ID=                    # Discord user id allowed to run /debug (admin-only + owner-gated)
 # POKEMON_SPAWN_CHANNEL_ID=  # optional — where wild pokémon appear; unset disables spawns entirely
@@ -295,13 +297,14 @@ with 14 exports and 9 responsibilities; see the SOLID notes at the end of this s
 `streamService` → `metadataService` → `ytdlpService`, no cycles. `lib/media.js` holds the pure helpers
 they share (`extractVideoId`, `isYouTubeUrl`, `ytThumb`, `trackKey`, `fmtSecs`).
 - `fetchVideoInfo` (`streamService.js`) → in-memory cache, then **`song_history` row, Innertube `getBasicInfo`, and oEmbed raced concurrently** (`Promise.any`), falling back to yt-dlp `--dump-json` only when all three reject. They were chained before; each misses often enough on this IP (DB miss, Innertube `LOGIN_REQUIRED` for ~5 of 6 videos, oEmbed 404 on unlisted) that chaining made every play pay the **sum of the misses**. Raced, a play costs the fastest source that answers. Innertube is capped at 1.5s — it has no deadline of its own.
-- **Cold plays go fast-then-slow.** `createStream` first tries cookie-free through the proxy (~2s), and falls back to the cookie-authenticated path (~7.4s) when no audio arrives. Cookies are the ~6s tax — an authenticated session makes YouTube demand the full player-JS + nsig chain — and the cookie-free path only works on ~75% of unseen videos, so both halves are needed.
+- **Cold plays are direct + cookied (~3.5s with the web_music pin).** The cookie-free fast path only runs when `YTDLP_PROXY` points at a healthy proxy, and since 2026-08-27 nothing does: WARP's pool is class-flagged (login gates / CDN 403s, three exits tested — rotation can't escape it) and the sidecar was removed. The logic is dormant, not deleted — a clean *sticky* egress (static ISP proxy; googlevideo URLs are IP-bound, so never per-request rotation) restores it by config alone. A residential IP was verified to serve cookie-free audio with no PO token at all.
 - **`_awaitFirstByte` is what makes the fallback affordable.** It peeks the first chunk (racing the extractor's exit and a first-byte budget) and puts it back before the resource reaches the player. Without it a dead extraction only surfaced when the 25s stall watchdog fired, which made "try fast, then slow" cost 32s instead of ~8s.
 - **The two attempts get different budgets** — `FIRST_BYTE_FAST_MS` 9s, `FIRST_BYTE_COOKIE_MS` 20s. The
   fast attempt is speculative, so a miss must stay cheap; the authenticated one is the last chance, and
   giving up on it drops the track. 9s for both was too tight and failed silently: measured cold to first
-  audio, **7757ms / 9089ms through WARP and 8010ms / 7923ms direct** — a coin flip against a 9s ceiling,
-  with the proxy *not* the variable. It hid behind the proxy-cooldown bug, which used to knock the hop
+  audio, **7757ms / 9089ms proxied and 8010ms / 7923ms direct** — a coin flip against a 9s ceiling,
+  with the proxy *not* the variable. (Historic web_embedded-era numbers; the web_music pin brought the
+  cookied path to ~3.5s.) It hid behind the proxy-cooldown bug, which used to knock the hop
   off the retry and shave it under the wire; fixing that attribution is what exposed this.
 - **There is deliberately no media-URL cache.** One existed and had to be removed: a googlevideo URL fetched with a plain GET is truncated by the server — on a 4:19 track `clen` said 4,429,008 bytes and a single `fetch` returned 622,592, so playback ended seconds in. yt-dlp ranges its own downloads, which is why it is correct. Reinstating a cache means writing a ranged reader first. Every test at the time read only the first 64KB, which a truncated stream satisfies — hence the e2e now pulls 1.5MB.
 - **Duration comes from the streaming extraction, not a second yt-dlp.** `createStream` takes an `onDuration` callback and passes `--print-to-file %(duration)s /tmp/yt-duration-<id>.txt`; stdout stays pure audio and a poller fills the song in place (~2.8s in, measured). The eager `backfillDuration` still exists for tracks queued *behind* others, but waits 2s + until 8s past the last streaming spawn, then re-checks — by then the sidecar has usually answered and it spawns nothing.
@@ -373,9 +376,10 @@ queue advances, so the embed briefly shows the outgoing track — fixing it mean
   attempt captures, tagged `useCookies`.
 - **A login gate never blames the proxy.** `markProxyBad` is skipped when stderr `isLoginGate` — in
   both `streamService`'s stderr watcher and `runYtdlp`'s direct-retry. Observed on prod: one gated
-  video put WARP in its 5min cooldown while WARP was healthy, so every play in that window paid the
-  slow authenticated route — and when the cookies are what's gated, the fallback it forced cannot work
-  either. Captured errors carry a `loginGate` tag, since the message alone can't be told apart.
+  video put the then-proxy in its 5min cooldown while the hop was healthy, so every play in that window
+  paid the slow authenticated route — and when the cookies are what's gated, the fallback it forced
+  cannot work either. Blame now needs transport evidence (`isProxyFault`) or 3 consecutive fast-path
+  misses. Captured errors carry a `loginGate` tag, since the message alone can't be told apart.
 - **Only the *final* stream attempt captures.** With the client escalation there are up to three, and reporting a cookie-path miss that the escalation then recovers would recreate exactly what the cookie-free filter exists to prevent: two issues per play, no way to tell a dead track from a retried one. `opts.final` marks the last attempt — the escalated one for YouTube, the cookie one for every other source, which has no escalation behind it. Captures carry a `clients` tag.
 - The inverse needed adding: when the cookie attempt yields no first byte, *we* kill the extractor,
   and a signalled exit is indistinguishable from a user skip in the stderr watcher. `_verifiedStream`

@@ -294,39 +294,31 @@ sudo dokku enter music-bot web /opt/ytdlp/bin/yt-dlp \
 ```
 Prints the title = the full chain works.
 
-### Sidecars
-`bgutil-provider` (PO tokens) and `warp` (clean egress IP) both run as plain
-containers on the `ytpot` network. What each buys, with measurements, and the
-failure modes: [`ARCHITECTURE.md`](ARCHITECTURE.md). For a from-scratch box the
-whole topology is in [`docker-compose.yml`](../docker-compose.yml).
+### Sidecar
+`bgutil-provider` (PO tokens) runs as a plain container on the `ytpot` network.
+What it buys, with measurements, and the failure modes:
+[`ARCHITECTURE.md`](ARCHITECTURE.md). For a from-scratch box the whole topology
+is in [`docker-compose.yml`](../docker-compose.yml).
 
 ```bash
-# PO-token provider — makes the no-cookie path reliable (3/4 → 12/12 videos)
+# PO-token provider — session refresh + reliability for any future cookie-free path
 sudo docker run -d --name bgutil-provider --restart=unless-stopped \
   --network ytpot brainicism/bgutil-ytdlp-pot-provider:1.3.1
 
-# WARP SOCKS5 proxy — clean egress IP, which is what lets cookies be dropped
-# (~6s per cold play). NET_ADMIN + the tun device rule are required.
-sudo docker run -d --name warp --restart=unless-stopped --network ytpot \
-  --cap-add NET_ADMIN --device-cgroup-rule='c 10:200 rwm' \
-  --sysctl net.ipv6.conf.all.disable_ipv6=0 \
-  --sysctl net.ipv4.conf.all.src_valid_mark=1 \
-  caomingjun/warp:latest
-
-# point the bot at them
-sudo dokku config:set music-bot \
-  YTDLP_POT_BASE_URL=http://bgutil-provider:4416 \
-  YTDLP_PROXY=socks5://warp:1080
+# point the bot at it
+sudo dokku config:set music-bot YTDLP_POT_BASE_URL=http://bgutil-provider:4416
 ```
 
-Verify WARP is up and egressing elsewhere:
-```bash
-sudo docker exec music-bot.web.1 curl -s --socks5-hostname warp:1080 https://api.ipify.org
-sudo docker exec music-bot.web.1 curl -s https://api.ipify.org   # should differ
-```
-
-Keep `YOUTUBE_COOKIES` set even once the proxy path no longer needs it — it is
-the fallback when WARP is down.
+**There is no proxy sidecar any more.** Cloudflare WARP used to fill that slot
+— a clean egress IP let the cookie-free fast path run — but YouTube now flags
+the WARP pool as a class (verified 2026-08-27: login gates, then CDN 403s on
+the unauthenticated download, across three exits in two /48s; rotation inside
+the pool cannot escape it). `YTDLP_PROXY` remains fully supported in code and
+is the drop-in knob if a genuinely clean egress ever appears (a static ISP
+proxy, ~$4/mo, is the realistic candidate — a residential IP was verified to
+serve cookie-free audio with no PO token at all). Set it and the fast path
+self-restores; a broken proxy demotes itself (transport-fault detection plus a
+3-miss strike counter) and plays fall back to the direct cookied path.
 
 ### yt-dlp cache volume
 `/data/ytdlp-cache` is bind-mounted so the player JS and signature caches survive
