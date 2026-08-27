@@ -58,6 +58,14 @@ export function _resetShutdownForTests() {
 // direct — a coin flip against a 9s ceiling, and the proxy is not the variable.
 // It went unnoticed because a login gate on the fast attempt used to trip the
 // proxy cooldown, which shaved off the hop that pushed it over.
+// The stderr tail of the most recent streaming attempt, shared by reference
+// with its watcher. Playback is sequential, so at the escalation site this is
+// always the cookied attempt that just failed — used to tell a routine
+// web_music content gap apart from a dead pin.
+let _lastStreamStderr = [];
+const MUSIC_GAP_RE = /video unavailable|not available/i;
+const isMusicGap = (tail) => MUSIC_GAP_RE.test(tail.join("\n"));
+
 const FIRST_BYTE_FAST_MS = 9000;
 // Stays clear of STREAM_STALL_MS (25s), which is the watchdog behind this one.
 const FIRST_BYTE_COOKIE_MS = 20_000;
@@ -156,6 +164,16 @@ export async function createStream(url, seekSeconds = 0, onDuration = null, { tr
             final: true,
         });
         if (escalated) {
+            // web_music (the primary) does not carry everything YouTube has —
+            // gameplay and some old uploads answer "Video unavailable … on
+            // YouTube Music". That miss is routine, recovers here every time,
+            // and must not file an issue — the capture below exists for a pin
+            // that has *died*, where the next YouTube nudge takes the fallback
+            // with it too.
+            if (isMusicGap(_lastStreamStderr)) {
+                log.music(log.gray(`not on YouTube Music — served by fallback clients`));
+                return escalated;
+            }
             // Worth an issue even though it recovered: it means the primary pin
             // is dead and the next YouTube nudge takes the fallback with it.
             captureError(new Error(`player_client ${PLAYER_CLIENTS.primary} dead — fallback served audio`), {
@@ -315,6 +333,7 @@ function _ytdlpStream(
     // cause (expired cookies, 403, format gone) lands in Sentry instead of
     // scrolling past in the logs.
     const tail = [];
+    _lastStreamStderr = tail; // escalation reads this to classify the miss
     (async () => {
         for await (const chunk of ytdlp.stderr) {
             const msg = dec.decode(chunk).trim();

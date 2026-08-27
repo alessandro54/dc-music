@@ -293,19 +293,36 @@ const EJS_ARGS = [];
 // YouTube-side changes, and a code push means a fresh image build plus a deploy.
 // `dokku config:set music-bot YTDLP_PLAYER_CLIENTS=…` + restart is the 30-second
 // version of the same fix. Comma-separated, yt-dlp's own syntax.
-const PRIMARY_CLIENTS = Deno.env.get("YTDLP_PLAYER_CLIENTS") || "web_embedded,default";
+const PRIMARY_CLIENTS = Deno.env.get("YTDLP_PLAYER_CLIENTS") || "web_music";
 
 // Tried only after the primary list has produced no audio at all — see
-// `createStream`'s escalation. `mweb` is useless as a primary (it extracts, then
-// 403s at download) but it *sees* videos web_embedded cannot, so it earns a place
-// on a path whose alternative is dropping the track.
-const FALLBACK_CLIENTS = "mweb,tv_simply,ios,android_vr";
+// `createStream`'s escalation. web_embedded leads: it is the proven audio
+// server on this IP (it was the primary until web_music beat it by 4.3s) and it
+// is also what covers web_music's known gap — videos "not available on YouTube
+// Music" (gameplay, some old uploads; measured 2026-08-27). `mweb` is useless
+// as a primary (it extracts, then 403s at download) but it *sees* videos
+// web_embedded cannot, so it earns a place on a path whose alternative is
+// dropping the track. tv_simply and android_vr were dropped after measurement:
+// on this IP they return storyboards-only / no formats, and every listed client
+// is a player API call the escalation pays for.
+const FALLBACK_CLIENTS = "web_embedded,default,mweb,ios";
 
 if (Deno.env.get("YTDLP_PLAYER_CLIENTS")) {
     log.info(`[ytdlp] player_client pinned by config → ${PRIMARY_CLIENTS}`);
 }
 
-const clientArgs = (clients) => ["--extractor-args", `youtube:fetch_pot=always;player_client=${clients}`];
+// use_ad_playback_context sends adPlaybackContext:{pyv:true} with the player
+// request, which suppresses the pre-roll ad placement in the response. Without
+// it, yt-dlp *simulates watching the ad*: the format carries `available_at` and
+// the downloader sleeps it off — the log line "Sleeping 4.00 seconds as
+// required by the site", ~4s on every cold play from this account. Measured
+// 2026-08-27, cookied, direct: web_music 8723ms with the sleep, 3454ms without.
+// The flag is gated per-client by SUPPORTS_AD_PLAYBACK_CONTEXT in yt-dlp
+// (web_music and mweb today), so it is inert for every other client in a list.
+const clientArgs = (clients) => [
+    "--extractor-args",
+    `youtube:fetch_pot=always;player_client=${clients};use_ad_playback_context=true`,
+];
 
 // Metadata needs a title and a duration — not a playable format URL. Pinning a
 // single lightweight client and skipping the player JS avoids yt-dlp probing
