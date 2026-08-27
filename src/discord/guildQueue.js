@@ -3,7 +3,7 @@ import { AudioPlayerStatus, createAudioPlayer, entersState, VoiceConnectionStatu
 import { attachPlayerEvents } from "@/discord/queuePlayerEvents.js";
 import { hydrate } from "@/discord/resolvers/spotify.js";
 import { createStream, destroyResource } from "@/discord/services/streamService.js";
-import { saveSong } from "@/discord/services/trackService.js";
+import { getDjRank, saveSong } from "@/discord/services/trackService.js";
 import { LIMITS, TIMEOUTS } from "@/lib/constants.js";
 import { log } from "@/lib/logger.js";
 import { captureError } from "@/lib/sentry.js";
@@ -192,6 +192,17 @@ export class GuildQueue {
     // Wired into every add path, not into _start, so a track waiting deep in
     // the queue shows its real title in /queue too.
     _absorbLookups(song) {
+        // The requester's DJ-leaderboard rank, shown on the panel's Added by
+        // line. Stamped once per song, not per render — the panel redraws every
+        // 10s and a Turso round-trip per tick would be absurd for a badge.
+        if (song.djRank === undefined && song.requestedById) {
+            song.djRank = null;
+            getDjRank(this.guildId, song.requestedById).then((rank) => {
+                if (!rank) return;
+                song.djRank = rank;
+                this._onChange?.();
+            }).catch(() => {});
+        }
         song._meta?.then((info) => {
             if (!info) return;
             song.title = info.title ?? song.title;

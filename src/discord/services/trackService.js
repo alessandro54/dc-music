@@ -232,6 +232,18 @@ export async function getTopDjs(guildId, limit = 5) {
         .limit(limit);
 }
 
+// The requester's position on the DJ leaderboard — the same ranking getTopDjs
+// renders, asked about one user. Reuses getTopDjs with no limit rather than a
+// bespoke rank query: the guild has a handful of DJs, and one code path means
+// the panel's badge can never disagree with /leaderboard. Null when the user
+// has no picks yet (their current play hasn't been saved at ask time).
+export async function getDjRank(guildId, userId) {
+    if (!userId) return null;
+    const djs = await getTopDjs(guildId, 1000);
+    const rank = djs.findIndex((dj) => dj.userId === userId);
+    return rank >= 0 ? rank + 1 : null;
+}
+
 // Metadata of an already-played track — beats re-asking yt-dlp (seconds).
 export async function getSongMeta(url) {
     const db = getDb();

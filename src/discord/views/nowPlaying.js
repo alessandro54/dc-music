@@ -68,9 +68,15 @@ function titleSection(song, lines) {
 // "Added by" reads as a mention chip rather than a plain tag, and the voice
 // channel as `<#id>` — Discord renders that with the speaker icon itself, so the
 // view never has to look a channel name up.
+const DJ_MEDALS = ["🥇", "🥈", "🥉"];
+
 function creditLines(queue, song) {
     const who = song.requestedById ? `<@${song.requestedById}>` : song.requestedBy;
-    const lines = [`- Added by ${who}`];
+    // The requester's standing on /leaderboard's DJ board, stamped on the song
+    // by the queue (GuildQueue._absorbLookups). Absent until it resolves — and
+    // absent for a first-ever pick, which has no rank to show yet.
+    const badge = song.djRank ? ` · ${DJ_MEDALS[song.djRank - 1] ?? "🎧"} DJ #${song.djRank}` : "";
+    const lines = [`- Added by ${who}${badge}`];
     const channelId = queue?.connection?.joinConfig?.channelId;
     if (channelId) lines.push(`- <#${channelId}>`);
     return lines;
