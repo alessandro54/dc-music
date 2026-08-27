@@ -15,7 +15,9 @@ import { captureError } from "@/lib/sentry.js";
 // upward through callbacks instead of reaching for module globals.
 //
 //   onDestroy() — the queue has torn itself down (drop it from the registry)
-//   onChange()  — playing/stopped changed (refresh the bot's presence)
+//   onChange()  — playback state changed (bot presence + the live Now Playing
+//                 panel, which has to redraw the moment a track or the
+//                 pause/resume state does, not on its next 10s tick)
 //   onTrackError(song, err) — a track was dropped; say so where it was asked for
 //   onRefill(queue) — the radio station is running low; go find more tracks
 export class GuildQueue {
@@ -292,6 +294,7 @@ export class GuildQueue {
             });
             this.resource = resource;
             this.player.play(resource);
+            this._onChange?.();
             return true;
         } catch (err) {
             log.error(`[Queue ${this.guildId}] Seek error: ${err.message}`);
@@ -348,9 +351,11 @@ export class GuildQueue {
     }
     pause() {
         this.player.pause();
+        this._onChange?.();
     }
     resume() {
         this.player.unpause();
+        this._onChange?.();
     }
 
     destroy() {

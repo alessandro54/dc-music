@@ -29,6 +29,7 @@ export const TIMEOUTS = {
     ALONE_LEAVE_MS: 120_000, // leave once the last human has been gone this long
     VOICE_RECONNECT_MS: 5_000,
     STREAM_STALL_MS: 25_000, // skip if a track stays buffering this long (yt-dlp stalled)
+    NP_TICK_MS: 10_000, // how often the live Now Playing panel redraws its progress bar
     COOKIE_CHECK_MS: 21_600_000, // re-check the YouTube session every 6h — it rotates mid-uptime
     POKEMON_SPAWN_MS: 600_000, // a wild pokémon appears every 10 minutes
     POKEAPI_MS: 4_000, // fetch has no default timeout; Discord expires the token at 15min

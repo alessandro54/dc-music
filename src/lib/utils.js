@@ -25,8 +25,12 @@ export function durationToMs(ts) {
     return secs !== null ? secs * 1000 : null;
 }
 
-export function progressBar(elapsed, total, length = 20) {
-    const ratio = Math.min(elapsed / total, 1);
-    const filled = Math.round(ratio * length);
-    return `${"▬".repeat(filled)}🔘${"▬".repeat(length - filled)}`;
+// A slider, not a meter: the knob marks the position and the track continues
+// past it, which is what the Now Playing dashboard is imitating. Box-drawing
+// characters rather than blocks — they sit on the text baseline, so the row
+// reads as one line instead of a stack of squares.
+export function progressBar(elapsed, total, length = 22) {
+    const ratio = Math.min(Math.max(elapsed / total, 0), 1);
+    const filled = Math.round(ratio * (length - 1));
+    return `${"━".repeat(filled)}🔘${"─".repeat(length - 1 - filled)}`;
 }

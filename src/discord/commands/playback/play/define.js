@@ -1,9 +1,11 @@
 import { autocomplete } from "@/discord/commands/playback/play/autocomplete.js";
 import { ensureVoice } from "@/discord/guards.js";
+import { ephemeral } from "@/discord/reply.js";
 import { resolveQuery } from "@/discord/resolvers/index.js";
 import { defineCommand } from "@/discord/router.js";
 import { enqueue, getOrCreateQueue } from "@/discord/services/playbackService.js";
-import { playlistQueued, trackQueued } from "@/discord/views/musicEmbeds.js";
+import { playlistQueued } from "@/discord/views/musicEmbeds.js";
+import { componentPayload, queuedView } from "@/discord/views/nowPlaying.js";
 import { UserFacingError } from "@/lib/errors.js";
 import { log } from "@/lib/logger.js";
 import { captureError, userFrom } from "@/lib/sentry.js";
@@ -95,7 +97,15 @@ async function run(interaction, voiceChannel, { name, next }) {
             log.music(
                 `Enqueued ${log.bold(result.song.title)} ${log.gray(`by ${interaction.user.tag}`)}`,
             );
-            payload = { embeds: [trackQueued(result.song, result.isFirst, result.position, next)] };
+            // A track that starts immediately needs no card of its own: the
+            // live Now Playing panel posts itself the moment audio starts, and a
+            // second copy here would go stale as soon as the track changed.
+            // Caller-only, so it doesn't push that panel up the channel — unless
+            // a placeholder already claimed the interaction publicly, in which
+            // case ephemeral is no longer available.
+            payload = result.isFirst
+                ? starting(`▶️ Starting **${result.song.title}**…`, placeholder)
+                : componentPayload(queuedView(result.song, result.position, queue, { next }));
             break;
         case "many":
             payload = {
@@ -113,6 +123,10 @@ async function run(interaction, voiceChannel, { name, next }) {
         ),
     );
 }
+
+// Ephemeral can only be decided when the interaction is first answered: once a
+// placeholder has gone out publicly, editReply cannot make it caller-only.
+const starting = (content, placeholder) => (placeholder ? content : ephemeral(content));
 
 // One reply, whichever phase we're in: if the interaction was already claimed by
 // a placeholder we have to edit it, otherwise this reply IS the acknowledgement.

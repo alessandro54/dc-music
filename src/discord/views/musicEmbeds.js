@@ -1,24 +1,8 @@
-import { AudioPlayerStatus } from "@discordjs/voice";
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
-
 import { embed } from "@/discord/views/embeds.js";
 import { COLORS, LIMITS } from "@/lib/constants.js";
-import { durationToMs, formatMs, progressBar } from "@/lib/utils.js";
 
-// Single track added — "Now Playing" if it starts immediately, else "Added to Queue".
-export function trackQueued(song, isFirst, position, next = false) {
-    const e = embed()
-        .setTitle(isFirst ? "🎵 Now Playing" : next ? "⏭️ Playing Next" : "➕ Added to Queue")
-        .setDescription(`**${song.title}**`)
-        .addFields(
-            // duration can still be backfilling — an empty field value throws.
-            { name: "Duration", value: song.duration ?? "—", inline: true },
-            { name: "Requested by", value: song.requestedBy, inline: true },
-            { name: "Position", value: isFirst ? "Now" : `#${position}`, inline: true },
-        );
-    if (song.thumbnail) e.setThumbnail(song.thumbnail);
-    return e;
-}
+// The Now Playing / Added to Queue views are NOT here — they are Components V2
+// containers, not embeds, and live in views/nowPlaying.js.
 
 // /radio — names the seed and says the station is endless. A station whose seed
 // is invisible is indistinguishable from a random shuffle, and the first question
@@ -44,42 +28,6 @@ export function playlistQueued(count, playlistName, requestedBy, next = false) {
         .setTitle(next ? "⏭️ Playlist Queued Next" : "📋 Playlist Queued")
         .setDescription(`**${playlistName ?? "Playlist"}** — ${count} songs added`)
         .addFields({ name: "Requested by", value: requestedBy, inline: true });
-}
-
-// /np and the np:* buttons — current track with a progress bar.
-export function nowPlayingEmbed(queue) {
-    const song = queue.current;
-    const elapsedMs = (queue.resource?.playbackDuration ?? 0) + queue.seekOffset * 1000;
-    const totalMs = durationToMs(song.duration);
-
-    const progressLine = totalMs
-        ? `${progressBar(elapsedMs, totalMs)}\n\`${formatMs(elapsedMs)} / ${song.duration}\``
-        : `\`${formatMs(elapsedMs)} elapsed\``;
-
-    const e = embed()
-        .setTitle("🎵 Now Playing")
-        .setDescription(`**${song.title}**\n\n${progressLine}`)
-        .addFields(
-            { name: "Requested by", value: song.requestedBy, inline: true },
-            { name: "Up next", value: queue.songs[1]?.title ?? "Nothing", inline: true },
-        );
-    if (song.thumbnail) e.setThumbnail(song.thumbnail);
-    return e;
-}
-
-export function nowPlayingControls(queue) {
-    const isPaused = queue.player.state.status === AudioPlayerStatus.Paused;
-    return new ActionRowBuilder().addComponents(
-        // Disabled rather than hidden when there's nothing to go back to: a row
-        // that changes width between renders is worse than a dead button.
-        new ButtonBuilder().setCustomId("np:previous").setEmoji("⏮️").setStyle(ButtonStyle.Secondary)
-            .setDisabled(queue.played.length === 0),
-        new ButtonBuilder().setCustomId("np:pause").setEmoji(isPaused ? "▶️" : "⏸️").setStyle(
-            ButtonStyle.Secondary,
-        ),
-        new ButtonBuilder().setCustomId("np:skip").setEmoji("⏭️").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("np:stop").setEmoji("⏹️").setStyle(ButtonStyle.Danger),
-    );
 }
 
 // /queue — list of upcoming tracks, capped at LIMITS.QUEUE_DISPLAY.

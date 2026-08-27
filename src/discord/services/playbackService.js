@@ -1,6 +1,7 @@
 import { joinVoiceChannel } from "@discordjs/voice";
 
 import { GuildQueue } from "@/discord/guildQueue.js";
+import { attachPanel, clearPanel, refreshPanel } from "@/discord/services/nowPlayingService.js";
 import { radioFrom, radioSongs } from "@/discord/services/radioService.js";
 import { LIMITS } from "@/lib/constants.js";
 import { UserFacingError } from "@/lib/errors.js";
@@ -15,6 +16,13 @@ export const queues = new Map();
 let _client = null;
 export function setClient(client) {
     _client = client;
+}
+
+// Every state change does two things: the bot's presence, and the live Now
+// Playing panel. Bundled so a caller can never refresh one and forget the other.
+function onQueueChange(queue) {
+    updateActivity();
+    refreshPanel(queue).catch((err) => log.warn(`[queue ${queue.guildId}] panel: ${err.message}`));
 }
 
 function updateActivity() {
@@ -51,18 +59,25 @@ function announceDrop(guildId, song, err) {
 export function getOrCreateQueue(interaction, voiceChannel) {
     announceChannels.set(interaction.guildId, interaction.channel);
     let queue = queues.get(interaction.guildId);
-    if (queue) return queue;
+    // The panel follows the channel the music is being asked for, same as the
+    // dropped-track announcements above.
+    if (queue) {
+        attachPanel(queue, interaction.channel);
+        return queue;
+    }
 
     queue = new GuildQueue(interaction.guildId, {
         onDestroy: () => {
             queues.delete(interaction.guildId);
             announceChannels.delete(interaction.guildId);
+            clearPanel(interaction.guildId).catch(() => {});
         },
-        onChange: updateActivity,
+        onChange: () => onQueueChange(queue),
         onTrackError: (song, err) => announceDrop(interaction.guildId, song, err),
         onRefill: (q) => void refillStation(q),
     });
     queues.set(interaction.guildId, queue);
+    attachPanel(queue, interaction.channel);
     queue.setConnection(joinVoiceChannel({
         channelId: voiceChannel.id,
         guildId: interaction.guildId,

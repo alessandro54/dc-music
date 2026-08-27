@@ -1,6 +1,5 @@
 import { ephemeral } from "@/discord/reply.js";
 import { queues } from "@/discord/services/playbackService.js";
-import { nowPlayingControls, nowPlayingEmbed } from "@/discord/views/musicEmbeds.js";
 
 // Component routes, the counterpart to router.js for buttons. A custom id is
 // `np:<action>`; the action names a function here. Keeping the table here rather
@@ -21,9 +20,7 @@ export const NP_PREFIX = "np:";
 
 export async function handleNowPlayingButton(interaction) {
     const queue = queues.get(interaction.guildId);
-    if (!queue?.playing) {
-        return interaction.update({ content: "Nothing playing.", embeds: [], components: [] });
-    }
+    if (!queue?.playing) return interaction.reply(ephemeral("Nothing playing."));
 
     // Anyone who can see the message can press the button, including someone who
     // isn't in the channel and can't hear what they are stopping. Slash commands
@@ -35,13 +32,12 @@ export async function handleNowPlayingButton(interaction) {
 
     const action = ACTIONS[interaction.customId.slice(NP_PREFIX.length)];
     if (!action) return interaction.deferUpdate();
-    action(queue);
 
-    if (!queue.playing || !queue.current) {
-        return interaction.update({ content: "⏹️ Stopped.", embeds: [], components: [] });
-    }
-    return interaction.update({
-        embeds: [nowPlayingEmbed(queue)],
-        components: [nowPlayingControls(queue)],
-    });
+    // Acknowledge before acting, not after: `stop` destroys the queue, which
+    // deletes this very message — an update aimed at it afterwards has nothing
+    // left to edit. The redraw is the panel's job either way (every action ends
+    // in a queue state change, which is what refreshes it), so the button only
+    // has to say "heard you".
+    await interaction.deferUpdate();
+    action(queue);
 }
