@@ -245,7 +245,7 @@ No build step — Deno runs `src/index.js` directly. `deno.json` defines tasks, 
 CI (`.github/workflows/deploy.yml`) runs on push to `main` (when `src/**/*.js`, `deno.json`, `deno.lock`, `Dockerfile`, or the workflow change), on a **weekly schedule** (Mon 06:00 UTC, keeps yt-dlp fresh), and via `workflow_dispatch`:
 1. Build image on a **native arm64 runner** (`ubuntu-24.04-arm`), push to `ghcr.io/alessandro54/discord-music`
 2. SSH into the Dokku host (`appleboy/ssh-action`) → `sudo dokku git:from-image music-bot <image>:<sha>`
-3. A `prune` job keeps only the **5 most recent GHCR versions** (`actions/delete-package-versions`,
+3. A `prune` job keeps only the **3 most recent GHCR versions** (`actions/delete-package-versions`,
    max 100 deletions per run). `provenance: false`/`sbom: false` on the build keep that 1 version
    per build instead of 3 — attestations made buildx push an OCI index plus two untagged children.
 

@@ -95,9 +95,12 @@ jobs:
       # The package is linked to this repo, so GITHUB_TOKEN suffices — no PAT.
       # Deleting from GHCR can't disturb the live container: Dokku already
       # pulled the image to the host and runs from the local copy.
-      - name: Keep only the 5 most recent image versions
+      # 3 kept = the live release plus two rollback targets. Rollback is
+      # `dokku git:from-image music-bot ghcr.io/...:<older sha>` on the host,
+      # so anything pruned here is a release you can no longer roll back to.
+      - name: Keep only the 3 most recent image versions
         uses: actions/delete-package-versions@v5
         with:
           package-name: discord-music
           package-type: container
-          min-versions-to-keep: 5
+          min-versions-to-keep: 3
