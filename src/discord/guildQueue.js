@@ -52,6 +52,7 @@ export class GuildQueue {
         this._streamStartedAt = null;
         this._stallRetried = false;
         this._seeking = false;
+        this._seekTicket = 0;
         // The next track, extracted ahead of time: { song, resource } | null.
         // See _maybePrefetch for why this is allowed to overlap the live stream.
         this._next = null;
@@ -420,12 +421,22 @@ export class GuildQueue {
         this._seeking = true;
         this._killStream();
         this.seekOffset = seconds;
+        // Seeks can overlap: the digits make two presses within the ~3.5s
+        // extraction ordinary. Each attempt takes a ticket; only the newest
+        // one's stream may play — a stale one is reaped, or it would leak its
+        // procs into a resource nothing ever kills (and, arriving late, could
+        // play the older position over the newer one).
+        const ticket = ++this._seekTicket;
         try {
             // seekSeconds > 0 already forces ffmpeg, so `transcode` is redundant
             // here — passed anyway so the flag has one meaning everywhere.
             const resource = await createStream(this.current.url, seconds, null, {
                 transcode: this.current.transcode,
             });
+            if (this._seekTicket !== ticket) {
+                destroyResource(resource).catch(() => {});
+                return false;
+            }
             this.resource = resource;
             this.player.play(resource);
             this._seeking = false;
@@ -434,7 +445,7 @@ export class GuildQueue {
         } catch (err) {
             // The track is still songs[0]; leave the queue idle-but-intact so
             // the next action (another seek, skip, /play) finds it in place.
-            this._seeking = false;
+            if (this._seekTicket === ticket) this._seeking = false;
             log.error(`[Queue ${this.guildId}] Seek error: ${err.message}`);
             captureError(err, {
                 tags: { stage: "seek", guild: this.guildId },
