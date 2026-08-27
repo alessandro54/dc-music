@@ -65,20 +65,51 @@ function triLeft(x, y, from, to) {
     return Math.abs(y - C) <= half;
 }
 
+// A painter returns falsy (transparent), true (the set's flat white), or an
+// [r, g, b] — which is what lets the medals be gold/silver/copper while the
+// controls stay monochrome.
 function render(paint) {
     const png = new PNG({ width: SIZE, height: SIZE });
     for (let y = 0; y < SIZE; y++) {
         for (let x = 0; x < SIZE; x++) {
             const i = (y * SIZE + x) * 4;
-            const on = paint(x, y);
-            png.data[i] = 255;
-            png.data[i + 1] = 255;
-            png.data[i + 2] = 255;
-            png.data[i + 3] = on ? 255 : 0;
+            const c = paint(x, y);
+            if (!c) continue;
+            const [r, g, b] = c === true ? [255, 255, 255] : c;
+            png.data[i] = r;
+            png.data[i + 1] = g;
+            png.data[i + 2] = b;
+            png.data[i + 3] = 255;
         }
     }
     return PNG.sync.write(png);
 }
+
+// Podium medals for the DJ badge — flat disc + ribbon in the metal's color,
+// same visual weight as the white set. [face, rim] per rank.
+const METALS = [
+    [[0xff, 0xc9, 0x40], [0xb8, 0x86, 0x0b]], // gold
+    [[0xc7, 0xcd, 0xd6], [0x8b, 0x93, 0x9e]], // silver
+    [[0xc7, 0x7b, 0x45], [0x8c, 0x52, 0x2a]], // copper
+];
+
+function medalPainter([face, rim]) {
+    return (x, y) => {
+        // Ribbon: two slanted straps meeting in a V above the disc.
+        const t = y / SIZE;
+        if (t >= 0.06 && t < 0.44) {
+            const spread = 0.20 - (t - 0.06) * 0.28; // straps converge downward
+            const w = 0.085;
+            if (Math.abs(x - f(0.5 - spread)) < f(w) || Math.abs(x - f(0.5 + spread)) < f(w)) return rim;
+        }
+        if (ring(x, y, 0.5, 0.62, 0.20, 0.27)) return rim; // rim
+        if (disc(x, y, 0.5, 0.62, 0.20)) return face; // face
+        return false;
+    };
+}
+METALS.forEach((metal, i) => {
+    GLYPHS[`np_medal${i + 1}`] = medalPainter(metal);
+});
 
 // Seven-segment digits 0-9 for the seek hotkeys — same flat white as the rest.
 const SEGS = {
