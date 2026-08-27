@@ -372,10 +372,44 @@ export function cookieArgs({ critical = false } = {}) {
     return COOKIES_ARGS;
 }
 
+// Is this stderr evidence that the *proxy hop* broke, rather than a verdict on
+// the video? "Not a login gate" was standing in for this, and it is far too
+// broad: a private, deleted or region-blocked video, an age gate, or a playlist
+// item that has gone — all of them exit non-zero with nothing to do with the
+// proxy, and all of them used to cost every play for the next 5min the slow
+// authenticated route. Transport failures name themselves, so match those.
+const PROXY_FAULT_RE =
+    /unable to connect to proxy|cannot connect to proxy|tunnel connection failed|proxyerror|socks|connection reset|connection refused|connection aborted|remote end closed connection|read timed out|timed out/i;
+
+export const isProxyFault = (text) => PROXY_FAULT_RE.test(text ?? "");
+
 export function markProxyBad(reason) {
     if (!PROXY || Date.now() < proxyDisabledUntil) return;
     proxyDisabledUntil = Date.now() + PROXY_COOLDOWN_MS;
     log.warn(`[ytdlp] proxy failed (${reason}) — going direct for ${PROXY_COOLDOWN_MS / 60000}min`);
+}
+
+// The speculative fast attempt missing is NOT evidence that the proxy is bad —
+// it is documented to miss on ~25% of unseen videos, and the caller retries with
+// cookies on the spot. A single miss used to trip the cooldown, and because the
+// cooldown disables the fast path itself, nothing then re-tested the proxy: one
+// in four cold plays turned WARP off for 5 minutes at a stretch.
+//
+// A *broken* proxy still has to be noticed, though, or every play pays a doomed
+// attempt forever. The distinguishing signal is consecutive misses: at 25% a run
+// of three is ~1.6% of cold plays, while a dead hop misses every time and is out
+// after three. Any hit resets the count.
+const FAST_MISS_STRIKES = 3;
+let fastMisses = 0;
+
+export function noteFastPathHit() {
+    fastMisses = 0;
+}
+
+export function noteFastPathMiss() {
+    if (++fastMisses < FAST_MISS_STRIKES) return;
+    markProxyBad(`fast path missed ${fastMisses}x in a row`);
+    fastMisses = 0;
 }
 
 // Force the direct, cookie-authenticated path for a while. Called when a
@@ -458,6 +492,7 @@ export function _resetForTests() {
     // The proxy cooldown is module state; without clearing it one test that
     // trips a fallback silently changes the path every later test takes.
     proxyDisabledUntil = 0;
+    fastMisses = 0;
 }
 
 // ── spawning ───────────────────────────────────────────────────────────────
@@ -479,10 +514,14 @@ export async function runYtdlp(args, { timeoutMs, what }) {
     // the second result. Costs one extra call on a real failure; keeps a broken
     // proxy from taking playback down with it.
     if (viaProxy.length && res.code !== 0) {
-        // Same exemption as the streaming path: a login gate says nothing about
-        // the proxy, and blaming it costs every later call the slow route for
-        // 5min. Still retry direct — the cookies are what the gate is asking for.
-        if (!isLoginGate(dec.decode(res.stderr))) markProxyBad(`${what} exited ${res.code}`);
+        // Same rule as the streaming path: only transport evidence blames the
+        // proxy. `!isLoginGate` was the old test and it is backwards — the
+        // comment above admits a non-zero exit here is *indistinguishable* from
+        // an unavailable video, and then blamed the proxy for it anyway. One
+        // private video in a playlist dump cost every play for the next 5min the
+        // slow route. Retry direct regardless: that is cheap and the second
+        // result is what the caller judges.
+        if (isProxyFault(dec.decode(res.stderr))) markProxyBad(`${what} exited ${res.code}`);
         // args were built while the proxy was healthy, so cookieArgs() gave
         // nothing. The direct path is the authenticated one — put them back,
         // otherwise the fallback is strictly weaker than the attempt it

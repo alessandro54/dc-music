@@ -156,16 +156,55 @@ Deno.test("a dead player_client pin escalates to the fallback clients", async ()
     }
 });
 
-Deno.test("after a proxy failure the next play skips the fast path", async () => {
+Deno.test("one fast-path miss does not disable the proxy", async () => {
+    // The miss is expected — the cookie-free attempt is documented to fail on
+    // ~25% of unseen videos, which is the entire reason the cookie path exists.
+    // Treating a single one as a proxy fault put WARP in a 5min cooldown on
+    // roughly every fourth cold play, and the cooldown disables the fast path,
+    // so nothing re-tested it: the hop was off far more than it was on.
     setup([0, 4096]);
     try {
-        await createStream(URL_A, 0, () => {}); // trips the cooldown
+        await createStream(URL_A, 0, () => {});
+        spawned = [];
+        emitPlan = [4096];
+        await createStream(URL_A, 0, () => {});
+        assert(usedProxy(spawned[0].args), "proxy should survive a single miss");
+        assert(!usedCookies(spawned[0].args), "the fast path should be intact");
+    } finally {
+        restore();
+    }
+});
+
+Deno.test("three misses in a row do disable it", async () => {
+    // A hop that has actually stopped working misses every time, so it is out
+    // after three plays rather than never — the cooldown still exists, it just
+    // needs evidence.
+    setup([0, 4096, 0, 4096, 0, 4096]);
+    try {
+        for (let i = 0; i < 3; i++) await createStream(URL_A, 0, () => {});
         spawned = [];
         emitPlan = [4096];
         await createStream(URL_A, 0, () => {});
         assertEquals(spawned.length, 1, "cooldown should mean a single direct attempt");
         assert(!usedProxy(spawned[0].args), "proxy is in cooldown");
         assert(usedCookies(spawned[0].args), "direct path is the authenticated one");
+    } finally {
+        restore();
+    }
+});
+
+Deno.test("a hit resets the strikes", async () => {
+    // Two misses either side of a working play are not a run — without the reset
+    // the counter would eventually trip on nothing but ordinary 25% misses.
+    setup([0, 4096, 4096, 0, 4096]);
+    try {
+        await createStream(URL_A, 0, () => {}); // miss, then cookies
+        await createStream(URL_A, 0, () => {}); // fast hit — resets
+        await createStream(URL_A, 0, () => {}); // miss
+        spawned = [];
+        emitPlan = [4096];
+        await createStream(URL_A, 0, () => {});
+        assert(usedProxy(spawned[0].args), "two non-consecutive misses are not a run");
     } finally {
         restore();
     }

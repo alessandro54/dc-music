@@ -11,7 +11,10 @@ import {
     FULL_EXTRACT_ARGS,
     hasCookies,
     isLoginGate,
+    isProxyFault,
     markProxyBad,
+    noteFastPathHit,
+    noteFastPathMiss,
     PLAYER_CLIENTS,
     proxyArgs,
     proxyHealthy,
@@ -114,7 +117,13 @@ export async function createStream(url, seekSeconds = 0, onDuration = null, { tr
     if (canTryFast) {
         const started = performance.now();
         const fast = await _verifiedStream(url, seekSeconds, onDuration, { ...opts, useCookies: false });
-        if (fast) return fast;
+        if (fast) {
+            noteFastPathHit();
+            return fast;
+        }
+        // Counted, not acted on: one miss is expected, a run of them is a hop
+        // that has stopped working. See noteFastPathMiss.
+        noteFastPathMiss();
         log.warn(
             `[stream] fast path gave no audio in ${
                 Math.round(performance.now() - started)
@@ -320,22 +329,33 @@ function _ytdlpStream(
         // This stream is already lost (the watchdog will skip it), but the next
         // track can avoid the same fate.
         //
-        // A login gate is not a proxy fault, and blaming the proxy for one is
-        // actively harmful: it disables the fast path for 5min, so every play in
-        // that window pays the ~7.4s authenticated route — and if the cookies
-        // are what's gated, the fallback it forced cannot work either. Observed
-        // on prod: one gated video knocked WARP out while WARP was healthy.
-        const stderr = tail.join("\n");
-        if (usedProxy && !isLoginGate(stderr)) markProxyBad(`stream exited ${status.code}`);
         // The cookie-free attempt is *expected* to fail on ~25% of unseen videos
         // — that miss is the whole reason the cookie path exists, and the caller
-        // retries immediately. Reporting it made one failed play emit two Sentry
-        // issues, with no way to tell a recovered miss from a dead track. Only
-        // the authenticated attempt, which has no fallback behind it, is news.
+        // retries immediately. It is exempt from BOTH verdicts below, and the
+        // order matters: it always runs through the proxy (canTryFast requires a
+        // healthy one), so leaving it above `markProxyBad` meant roughly one in
+        // four fresh plays put WARP in its 5min cooldown. That cooldown then
+        // disables the fast path itself, so nothing re-tested the proxy and every
+        // play in the window paid the ~7.4s authenticated route — the hop was off
+        // far more of the time than it was on.
+        //
+        // Reporting it also made one failed play emit two Sentry issues, with no
+        // way to tell a recovered miss from a dead track. Only the authenticated
+        // attempt, which has no fallback behind it, is news.
+        const stderr = tail.join("\n");
         if (!useCookies) {
             log.warn(`[stream] fast path exited ${status.code}: ${tail[tail.length - 1] ?? "no stderr"}`);
             return;
         }
+        // This stream is already lost (the watchdog will skip it), but the next
+        // track can avoid the same fate.
+        //
+        // Only *transport* evidence blames the proxy. A login gate is the case
+        // that proved the point — observed on prod, one gated video knocked WARP
+        // out while WARP was healthy, and if the cookies are what is gated the
+        // fallback it forced cannot work either — but it is not the only one: a
+        // private or deleted video is just as innocent of it.
+        if (usedProxy && isProxyFault(stderr)) markProxyBad(`stream exited ${status.code}`);
         captureError(new Error(`yt-dlp exited ${status.code}: ${tail[tail.length - 1] ?? "no stderr"}`), {
             tags: {
                 stage: "ytdlp",
